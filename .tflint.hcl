@@ -22,6 +22,6 @@ rule "terraform_module_pinned_source" {
   style   = "flexible"
 }
 
-# TODO(template): opinions, not correctness. Enable if this module wants them.
+# Opinions, not correctness. Left off here: enable one if this module wants it.
 # rule "terraform_standard_module_structure" { enabled = true }
 # rule "terraform_unused_required_providers" { enabled = true }

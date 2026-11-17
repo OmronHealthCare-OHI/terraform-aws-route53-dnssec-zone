@@ -13,9 +13,9 @@ skip-check:
   - CKV_TF_1
   # We use the terraform standard for module versions.
   - CKV_TF_2
-  # TODO(template): add your module's conscious skips below, each with the
-  # reason it is safe here. Keep them fenced under a comment like the one below
-  # so they stay separable from the two generic skips above.
-  # --- <module name>: conscious skips ---
+  # --- route53-dnssec-zone: conscious skips ---
+  # None here. The key policy's three skips (CKV_AWS_109, CKV_AWS_111,
+  # CKV_AWS_356) are inline on the policy document in modules/signing-key,
+  # next to the statements they are about, each with its reason.
 
 summary-position: top

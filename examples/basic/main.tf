@@ -1,5 +1,18 @@
 terraform {
   required_version = ">= 1.9.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
+    }
+  }
+}
+
+# Route 53 is global, but the zone's DNSSEC signing key must live in us-east-1,
+# so the module runs with a us-east-1 provider.
+provider "aws" {
+  region = "us-east-1"
 }
 
 # The caller owns the label: it states where it deploys and where it sits in the
@@ -9,15 +22,16 @@ module "label" {
 
   namespace  = "vlt"
   region     = "us"
-  stage      = "dev"
-  aws_region = "us-west-2" # tag only; not part of the id
+  stage      = "prd"
+  aws_region = "us-east-1" # tag only; not part of the id
 
   application = "platform"
 }
 
-module "example" {
+module "example_com" {
   source = "../.."
 
-  name    = "example"
-  context = module.label.context
+  name        = "example"
+  domain_name = "example.com"
+  context     = module.label.context
 }

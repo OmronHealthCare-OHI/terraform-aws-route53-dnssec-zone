@@ -1,5 +1,12 @@
 terraform {
   required_version = ">= 1.9.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
+    }
+  }
 }
 
 # The caller owns the label: it states where it deploys and where it sits in the
@@ -9,11 +16,11 @@ module "label" {
 
   namespace  = "vlt"
   region     = "us"
-  stage      = "dev"
+  stage      = "prd"
   aws_region = "us-west-2" # tag only; not part of the id
 
   application = "platform"
-  module      = "example" # -> ohi:module = platform-example; not in the id
+  module      = "dns" # -> ohi:module = platform-dns; not in the id
   owner       = "cloud-foundations"
 
   tags = {
@@ -21,20 +28,57 @@ module "label" {
   }
 }
 
-# TODO(template): a provider block belongs here once the module declares one.
-# Set allowed_account_ids and default_tags = module.label.tags, so anything the
-# example creates outside the module carries the same tags the module applies to
-# its own resources. See terraform-aws-lambda-service/examples/complete/main.tf.
+# The caller's own region, for whatever else it manages.
+provider "aws" {
+  region              = "us-west-2"
+  allowed_account_ids = ["111111111111"]
 
-module "example" {
+  default_tags {
+    tags = module.label.tags
+  }
+}
+
+# Route 53 accepts DNSSEC signing keys from us-east-1 only, and each zone
+# creates its own key, so the zones get a us-east-1 provider. Route 53 itself is
+# global: the zones don't care which region manages them.
+provider "aws" {
+  alias               = "us_east_1"
+  region              = "us-east-1"
+  allowed_account_ids = ["111111111111"]
+
+  default_tags {
+    tags = module.label.tags
+  }
+}
+
+# Two zones, two keys: one per zone.
+module "example_com" {
   source = "../.."
+  providers = {
+    aws = aws.us_east_1
+  }
 
-  name    = "example"
-  context = module.label.context
+  name                 = "example"
+  domain_name          = "example.com"
+  key_signing_key_name = "primary"
+  signing_status       = "SIGNING"
+  comment              = "Public DNS for example.com"
+  context              = module.label.context
 
   extra_tags = {
     cost-centre = "platform"
   }
+}
+
+module "example_org" {
+  source = "../.."
+  providers = {
+    aws = aws.us_east_1
+  }
+
+  name        = "example-org"
+  domain_name = "example.org"
+  context     = module.label.context
 }
 
 # Chaining: a child label inherits the module's hierarchy and sets its own leaf
@@ -42,13 +86,28 @@ module "example" {
 module "child_label" {
   source = "github.com/OmronHealthCare-OHI/terraform-null-label?ref=1.0.0"
 
-  context = module.example.label_context
-  name    = "child"
+  context = module.example_com.label_context
+  name    = "records"
 }
 
-output "id" {
-  description = "Name the module composed, e.g. vlt-us-dev-platform-example"
-  value       = module.example.id
+output "example_com_zone" {
+  description = "example.com's zone in aws-organization's hostedZone shape, ready for its domain_zones map"
+  value       = module.example_com.zone
+}
+
+output "example_com_name_servers" {
+  description = "The name servers to delegate example.com to at the registrar"
+  value       = module.example_com.name_servers
+}
+
+output "example_com_kms_key_arn" {
+  description = "example.com's own signing key, for alarms and audits"
+  value       = module.example_com.kms_key_arn
+}
+
+output "example_com_ds_record" {
+  description = "The DS record to add at the registrar once delegation has propagated"
+  value       = module.example_com.ds_record
 }
 
 output "child_id" {
