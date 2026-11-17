@@ -31,6 +31,12 @@ output "ds_record" {
     digest_type = aws_route53_key_signing_key.this.digest_algorithm_type
     digest      = aws_route53_key_signing_key.this.digest_value
   }
+
+  # The KSK exists before the zone signs. A DS record built from this output in
+  # a parent zone Terraform manages must not be created until signing is on:
+  # a DS record for a zone that doesn't sign fails validation for the whole
+  # domain.
+  depends_on = [aws_route53_hosted_zone_dnssec.this]
 }
 
 output "signing_status" {
