@@ -51,19 +51,24 @@ provider "aws" {
   }
 }
 
-# Two zones, two keys: one per zone.
+# Two zones, each with keys of its own. example.com is mid-rotation: a second
+# key-signing key, on a second KMS key, next to the first (README.md, "Rotating
+# the key-signing key"). Outside a rotation a zone has one, primary by default.
 module "example_com" {
   source = "../.."
   providers = {
     aws = aws.us_east_1
   }
 
-  name                 = "example"
-  domain_name          = "example.com"
-  key_signing_key_name = "primary"
-  signing_status       = "SIGNING"
-  comment              = "Public DNS for example.com"
-  context              = module.label.context
+  name        = "example"
+  domain_name = "example.com"
+  key_signing_keys = {
+    primary   = { status = "ACTIVE" }
+    secondary = { status = "ACTIVE" }
+  }
+  signing_status = "SIGNING"
+  comment        = "Public DNS for example.com"
+  context        = module.label.context
 
   extra_tags = {
     cost-centre = "platform"
@@ -100,14 +105,14 @@ output "example_com_name_servers" {
   value       = module.example_com.name_servers
 }
 
-output "example_com_kms_key_arn" {
-  description = "example.com's own signing key, for alarms and audits"
-  value       = module.example_com.kms_key_arn
+output "example_com_kms_key_arns" {
+  description = "example.com's signing keys, one per key-signing key, for alarms and audits"
+  value       = module.example_com.kms_key_arns
 }
 
-output "example_com_ds_record" {
-  description = "The DS record to add at the registrar once delegation has propagated"
-  value       = module.example_com.ds_record
+output "example_com_ds_records" {
+  description = "example.com's DS records for the registrar, one per key-signing key"
+  value       = module.example_com.ds_records
 }
 
 output "child_id" {

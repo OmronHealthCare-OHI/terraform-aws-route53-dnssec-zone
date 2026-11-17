@@ -22,31 +22,34 @@ output "name_servers" {
   value       = aws_route53_zone.this.name_servers
 }
 
-output "ds_record" {
-  description = "The DS record for the registrar, as the record string (key tag, algorithm, digest type, digest) and as its four fields, which registrar forms ask for separately. Add it only once delegation to name_servers has propagated."
+output "ds_records" {
+  description = "The DS record for the registrar, per key-signing key (keyed as key_signing_keys), as the record string (key tag, algorithm, digest type, digest) and as its four fields, which registrar forms ask for separately, with the KSK's status. Add a record only once delegation to name_servers has propagated, and during a rotation only in the order README.md gives."
   value = {
-    record      = aws_route53_key_signing_key.this.ds_record
-    key_tag     = aws_route53_key_signing_key.this.key_tag
-    algorithm   = aws_route53_key_signing_key.this.signing_algorithm_type
-    digest_type = aws_route53_key_signing_key.this.digest_algorithm_type
-    digest      = aws_route53_key_signing_key.this.digest_value
+    for name, ksk in aws_route53_key_signing_key.this : name => {
+      record      = ksk.ds_record
+      key_tag     = ksk.key_tag
+      algorithm   = ksk.signing_algorithm_type
+      digest_type = ksk.digest_algorithm_type
+      digest      = ksk.digest_value
+      status      = ksk.status
+    }
   }
 
-  # The KSK exists before the zone signs. A DS record built from this output in
+  # The KSKs exist before the zone signs. A DS record built from this output in
   # a parent zone Terraform manages must not be created until signing is on:
   # a DS record for a zone that doesn't sign fails validation for the whole
   # domain.
   depends_on = [aws_route53_hosted_zone_dnssec.this]
 }
 
-output "kms_key_arn" {
-  description = "ARN of this zone's KMS signing key, in us-east-1: for alarms, audits, and the key policy reviews a broken key would call for."
-  value       = module.signing_key.key_arn
+output "kms_key_arns" {
+  description = "ARN of each key-signing key's KMS key (keyed as key_signing_keys), in us-east-1: for alarms, audits, and the key policy reviews a broken key would call for."
+  value       = { for name, key in module.signing_key : name => key.key_arn }
 }
 
-output "kms_key_alias" {
-  description = "Alias of this zone's KMS signing key, alias/<label id>-dnssec."
-  value       = module.signing_key.alias_name
+output "kms_key_aliases" {
+  description = "Alias of each key-signing key's KMS key (keyed as key_signing_keys): alias/<label id>-dnssec for the entry named primary, alias/<label id>-dnssec-<name> for any other."
+  value       = { for name, key in module.signing_key : name => key.alias_name }
 }
 
 output "signing_status" {
