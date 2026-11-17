@@ -82,13 +82,25 @@ whole domain:
 
 ## Rotating the key-signing key
 
-Route 53 rotates the zone-signing key itself. The KSK is rotated by hand, and
-this module holds one KSK, so a rotation is a short series of changes:
+Route 53 rotates the zone-signing key itself. The KSK is rotated by hand, with
+AWS's double-DS method. A zone holds at most two KSKs, and Route 53 requires each
+to use a **different KMS key**, so a rotation needs a second signing key: call
+`modules/signing-key` again under another `name`. This module holds one KSK, so
+step 1 happens outside it, or in a later version that holds two.
 
-1. Add a second KSK on the same zone (outside this module, or in a later version
-   that holds two), and add its DS record at the registrar next to the first.
-2. Wait for the DS TTL.
-3. Remove the first DS record, wait again, then remove the first KSK.
+1. **Add the new KSK and its DS record.** Create a second, ACTIVE KSK on the zone,
+   on the second KMS key, and add its DS record at the registrar next to the
+   first. The old DS record stays.
+2. **Wait for both caches to expire.** Read the TTL of the zone's DNSKEY records
+   (`dig <domain> DNSKEY @<one of name_servers>`) and of the DS record at the
+   parent (`dig <domain> DS @<one of the parent's name servers>`), and wait at
+   least the larger of the two, often two days. Until then some resolvers still
+   hold the DNSKEY set from before the new key existed, and only the old DS
+   record matches it.
+3. **Remove the old DS record** at the registrar, then wait for the DS TTL again:
+   resolvers that cached only the old DS record still need the old KSK.
+4. **Retire the old KSK.** Set it to INACTIVE, then delete it. Route 53 refuses to
+   delete an active KSK.
 
 ## Permissions the deploying identity needs
 
