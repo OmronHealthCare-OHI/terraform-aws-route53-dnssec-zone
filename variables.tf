@@ -10,11 +10,13 @@ variable "name" {
 
 variable "domain_name" {
   type        = string
-  description = "The domain the zone serves, e.g. example.com: lowercase, no trailing dot. Changing it replaces the zone, which prevent_destroy refuses."
+  description = "The domain the zone serves, e.g. example.com: lowercase, no trailing dot, an internationalized name in its Punycode (xn--) form. Changing it replaces the zone, which prevent_destroy refuses."
 
   validation {
-    condition     = length(var.domain_name) <= 253 && can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", var.domain_name))
-    error_message = "domain_name must be a lowercase domain name of two or more labels, with no trailing dot, e.g. example.com."
+    # The top-level label: letters, or an internationalized TLD in its ASCII
+    # (Punycode) form, e.g. xn--p1ai.
+    condition     = length(var.domain_name) <= 253 && can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+([a-z]{2,63}|xn--[a-z0-9]([a-z0-9-]{0,57}[a-z0-9])?)$", var.domain_name))
+    error_message = "domain_name must be a lowercase domain name of two or more labels, with no trailing dot, e.g. example.com; an internationalized name in its Punycode form, e.g. xn--e1afmkfd.xn--p1ai."
   }
 }
 

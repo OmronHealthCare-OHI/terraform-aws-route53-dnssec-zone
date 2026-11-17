@@ -153,6 +153,41 @@ run "a_single_label_domain_is_rejected" {
   expect_failures = [var.domain_name]
 }
 
+# Internationalized domains in their ASCII (Punycode) form, the top-level
+# label included.
+run "a_punycode_domain_is_accepted" {
+  command = plan
+
+  variables {
+    domain_name = "xn--e1afmkfd.xn--p1ai"
+  }
+
+  assert {
+    condition     = aws_route53_zone.this.name == "xn--e1afmkfd.xn--p1ai"
+    error_message = "a Punycode domain, its top-level label included, must be accepted"
+  }
+}
+
+run "an_empty_punycode_top_level_label_is_rejected" {
+  command = plan
+
+  variables {
+    domain_name = "example.xn--"
+  }
+
+  expect_failures = [var.domain_name]
+}
+
+run "a_numeric_top_level_label_is_rejected" {
+  command = plan
+
+  variables {
+    domain_name = "example.123"
+  }
+
+  expect_failures = [var.domain_name]
+}
+
 run "a_key_outside_us_east_1_is_rejected" {
   command = plan
 
