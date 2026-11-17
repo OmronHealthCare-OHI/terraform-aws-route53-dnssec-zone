@@ -1,0 +1,38 @@
+name: Pull Request
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+concurrency:
+  group: ci-${{ github.head_ref }}-pr
+
+# Both jobs state what they need; this only stops the workflow from inheriting
+# the repository default. A called workflow cannot hold more than the caller
+# grants, so the validate job below repeats what validate.yml's jobs ask for.
+permissions: {}
+
+jobs:
+  administration:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: PR Labeling
+        uses: srvaroa/labeler@v1.14.0
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  validate:
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read # for actions/checkout to fetch code
+      issues: read # for publish-unit-test-result-action to read issues
+      checks: write # for publish-unit-test-result-action to create checks
+      pull-requests: write # for publish-unit-test-result-action to comment on PRs
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

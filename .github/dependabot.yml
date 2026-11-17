@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    labels:
+      - dependencies
+      - github_actions
+    schedule:
+      interval: "monthly"
+  - package-ecosystem: "terraform"
+    # The examples pin the same module sources as the root, so they go stale
+    # unless they are watched too.
+    directories:
+      - "/"
+      - "/examples/*"
+    labels:
+      - dependencies
+      - terraform
+    schedule:
+      interval: "weekly"
