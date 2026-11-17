@@ -28,8 +28,7 @@ module "label" {
   }
 }
 
-# The caller's own region. Route 53 is global, so the zones can be managed from
-# any region; only the signing key can't.
+# The caller's own region, for whatever else it manages.
 provider "aws" {
   region              = "us-west-2"
   allowed_account_ids = ["111111111111"]
@@ -39,8 +38,9 @@ provider "aws" {
   }
 }
 
-# Route 53 accepts DNSSEC signing keys from us-east-1 only, so the key gets a
-# provider of its own; the submodule refuses any other region.
+# Route 53 accepts DNSSEC signing keys from us-east-1 only, and each zone
+# creates its own key, so the zones get a us-east-1 provider. Route 53 itself is
+# global: the zones don't care which region manages them.
 provider "aws" {
   alias               = "us_east_1"
   region              = "us-east-1"
@@ -51,24 +51,15 @@ provider "aws" {
   }
 }
 
-module "dnssec_signing_key" {
-  source = "../../modules/signing-key"
+# Two zones, two keys: one per zone.
+module "example_com" {
+  source = "../.."
   providers = {
     aws = aws.us_east_1
   }
 
-  name                    = "dnssec"
-  deletion_window_in_days = 30
-  context                 = module.label.context
-}
-
-# Two zones, one key.
-module "example_com" {
-  source = "../.."
-
   name                 = "example"
   domain_name          = "example.com"
-  kms_key_arn          = module.dnssec_signing_key.key_arn
   key_signing_key_name = "primary"
   signing_status       = "SIGNING"
   comment              = "Public DNS for example.com"
@@ -81,10 +72,12 @@ module "example_com" {
 
 module "example_org" {
   source = "../.."
+  providers = {
+    aws = aws.us_east_1
+  }
 
   name        = "example-org"
   domain_name = "example.org"
-  kms_key_arn = module.dnssec_signing_key.key_arn
   context     = module.label.context
 }
 
@@ -97,14 +90,19 @@ module "child_label" {
   name    = "records"
 }
 
-output "example_com_domain_zone" {
-  description = "example.com's zone in aws-organization's <name>_domain_zone shape"
+output "example_com_zone" {
+  description = "example.com's zone in aws-organization's hostedZone shape, ready for its domain_zones map"
   value       = module.example_com.zone
 }
 
 output "example_com_name_servers" {
   description = "The name servers to delegate example.com to at the registrar"
   value       = module.example_com.name_servers
+}
+
+output "example_com_kms_key_arn" {
+  description = "example.com's own signing key, for alarms and audits"
+  value       = module.example_com.kms_key_arn
 }
 
 output "example_com_ds_record" {

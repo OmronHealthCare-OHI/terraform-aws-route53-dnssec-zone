@@ -9,6 +9,17 @@ variable "name" {
   }
 }
 
+variable "hosted_zone_id" {
+  type        = string
+  description = "Id of the one hosted zone whose key-signing key this key backs. The key policy lets Route 53 use the key for that zone only."
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^Z[A-Z0-9]+$", var.hosted_zone_id))
+    error_message = "hosted_zone_id must be a Route 53 hosted zone id, e.g. Z0123456789ABCDEFGHIJ."
+  }
+}
+
 variable "deletion_window_in_days" {
   type        = number
   description = "Days between scheduling the key's deletion and deleting it, 7 to 30. The longest by default: a key that signs a live zone must be recoverable."

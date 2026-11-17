@@ -20,16 +20,6 @@ variable "domain_name" {
   }
 }
 
-variable "kms_key_arn" {
-  type        = string
-  description = "ARN of the KMS key the key-signing key is backed by: an asymmetric ECC_NIST_P256 SIGN_VERIFY key in us-east-1 whose policy admits Route 53's DNSSEC service. The signing-key submodule creates one; pass its key_arn. A key ARN, not an alias."
-
-  validation {
-    condition     = can(regex("^arn:aws:kms:us-east-1:[0-9]{12}:key/(mrk-[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", var.kms_key_arn))
-    error_message = "kms_key_arn must be a KMS key ARN in us-east-1 (arn:aws:kms:us-east-1:<account>:key/<id>): Route 53 accepts DNSSEC keys from us-east-1 only, and not by alias."
-  }
-}
-
 variable "key_signing_key_name" {
   type        = string
   description = "Name of the key-signing key, unique within the zone. Changing it replaces the KSK, and with it the DS record the registrar must carry: rotate by the procedure in README.md, not by renaming."

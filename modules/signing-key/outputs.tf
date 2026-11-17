@@ -1,5 +1,5 @@
 output "key_arn" {
-  description = "The KMS key's ARN: pass it to the root module's kms_key_arn."
+  description = "The KMS key's ARN, for the key-signing key it backs."
   value       = aws_kms_key.this.arn
 }
 

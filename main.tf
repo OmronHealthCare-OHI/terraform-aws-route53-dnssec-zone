@@ -1,10 +1,18 @@
 # A public Route 53 hosted zone, signed with DNSSEC.
 #
-# Three resources, always together: the zone, one key-signing key (KSK) backed
-# by a KMS key the caller passes in, and the zone's DNSSEC signing. Route 53
-# manages the zone-signing key itself. The KMS key is not created here: one key
-# signs every zone in an account, so it is the signing-key submodule's
-# (modules/signing-key), called once per account.
+# Four resources, always together: the zone, its own KMS signing key (the
+# signing-key submodule), one key-signing key (KSK) backed by that key, and the
+# zone's DNSSEC signing. Route 53 manages the zone-signing key itself.
+#
+# One KMS key per zone, not one shared by every zone in the account: a key
+# that breaks (a bad key policy, disabled, scheduled for deletion) or is misused
+# (kms:Sign forges DNSKEY signatures) then reaches one domain, not all of them,
+# and each zone rotates and retires its key on its own. A key costs about a
+# dollar a month.
+#
+# Route 53 accepts DNSSEC signing keys from us-east-1 only, so this module's
+# provider must be configured for us-east-1. Route 53 itself is global, so the
+# zone does not care; the submodule refuses any other region.
 #
 # The zone has prevent_destroy. A re-created public zone gets new name servers,
 # so the domain stops resolving until the registrar is updated; with DNSSEC on,
@@ -43,9 +51,18 @@ resource "aws_route53_zone" "this" {
   }
 }
 
+module "signing_key" {
+  source = "./modules/signing-key"
+
+  name           = "${var.name}-dnssec"
+  hosted_zone_id = aws_route53_zone.this.zone_id
+  context        = var.context
+  extra_tags     = var.extra_tags
+}
+
 resource "aws_route53_key_signing_key" "this" {
   hosted_zone_id             = aws_route53_zone.this.zone_id
-  key_management_service_arn = var.kms_key_arn
+  key_management_service_arn = module.signing_key.key_arn
   name                       = var.key_signing_key_name
 
   # Only an ACTIVE KSK signs. Deactivating it is a step in rotation or in

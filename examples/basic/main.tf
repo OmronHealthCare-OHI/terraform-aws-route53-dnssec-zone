@@ -9,7 +9,8 @@ terraform {
   }
 }
 
-# Route 53 is global, but its DNSSEC signing key must live in us-east-1.
+# Route 53 is global, but the zone's DNSSEC signing key must live in us-east-1,
+# so the module runs with a us-east-1 provider.
 provider "aws" {
   region = "us-east-1"
 }
@@ -27,18 +28,10 @@ module "label" {
   application = "platform"
 }
 
-# Once per account: every signed zone there shares this key.
-module "dnssec_signing_key" {
-  source = "../../modules/signing-key"
-
-  context = module.label.context
-}
-
 module "example_com" {
   source = "../.."
 
   name        = "example"
   domain_name = "example.com"
-  kms_key_arn = module.dnssec_signing_key.key_arn
   context     = module.label.context
 }

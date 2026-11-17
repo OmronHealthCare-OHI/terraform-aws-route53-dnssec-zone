@@ -1,5 +1,5 @@
 # The signing-key submodule: an asymmetric P-256 signing key in us-east-1 whose
-# policy lets Route 53's DNSSEC service use it for this account's zones only.
+# policy lets Route 53's DNSSEC service use it for one zone in this account only.
 #
 # A real provider with fake credentials, not a mock: the key policy is rendered
 # by aws_iam_policy_document, which a mocked provider replaces with random text.
@@ -30,6 +30,8 @@ override_data {
 }
 
 variables {
+  hosted_zone_id = "Z0123456789ABCDEFGHIJ"
+
   context = {
     namespace   = "vlt"
     region      = "us"
@@ -39,7 +41,7 @@ variables {
   }
 }
 
-run "an_ecc_p256_signing_key_route53_can_use_for_this_account_only" {
+run "an_ecc_p256_signing_key_route53_can_use_for_its_zone_only" {
   command = plan
 
   module {
@@ -73,10 +75,10 @@ run "an_ecc_p256_signing_key_route53_can_use_for_this_account_only" {
     condition = alltrue([
       for s in jsondecode(aws_kms_key.this.policy).Statement : (
         s.Condition.StringEquals["aws:SourceAccount"] == "111111111111"
-        && s.Condition.ArnLike["aws:SourceArn"] == "arn:aws:route53:::hostedzone/*"
+        && s.Condition.ArnEquals["aws:SourceArn"] == "arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHIJ"
       ) if try(s.Principal.Service, null) == "dnssec-route53.amazonaws.com"
     ])
-    error_message = "every statement for dnssec-route53.amazonaws.com must be limited to this account's hosted zones"
+    error_message = "every statement for dnssec-route53.amazonaws.com must be limited to this account and its one hosted zone"
   }
 
   assert {
@@ -100,6 +102,27 @@ run "an_ecc_p256_signing_key_route53_can_use_for_this_account_only" {
     ]) == 1
     error_message = "the account's own IAM must administer the key, as in KMS's default policy"
   }
+}
+
+run "a_malformed_hosted_zone_id_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/signing-key"
+  }
+
+  variables {
+    hosted_zone_id = "example.com"
+  }
+
+  override_data {
+    target = data.aws_region.current
+    values = {
+      region = "us-east-1"
+    }
+  }
+
+  expect_failures = [var.hosted_zone_id]
 }
 
 run "a_key_outside_us_east_1_is_refused" {

@@ -1,5 +1,5 @@
 output "zone" {
-  description = "The hosted zone as an object: arn, name and zone_id. The shape of aws-organization's <name>_domain_zone outputs, so a caller can publish it as is."
+  description = "The hosted zone as an object: arn, name and zone_id. The shape of aws-organization's hostedZone, so a caller can put it straight into its domain_zones map."
   value = {
     arn     = aws_route53_zone.this.arn
     name    = aws_route53_zone.this.name
@@ -37,6 +37,16 @@ output "ds_record" {
   # a DS record for a zone that doesn't sign fails validation for the whole
   # domain.
   depends_on = [aws_route53_hosted_zone_dnssec.this]
+}
+
+output "kms_key_arn" {
+  description = "ARN of this zone's KMS signing key, in us-east-1: for alarms, audits, and the key policy reviews a broken key would call for."
+  value       = module.signing_key.key_arn
+}
+
+output "kms_key_alias" {
+  description = "Alias of this zone's KMS signing key, alias/<label id>-dnssec."
+  value       = module.signing_key.alias_name
 }
 
 output "signing_status" {

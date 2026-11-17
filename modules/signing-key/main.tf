@@ -1,5 +1,6 @@
-# The KMS key Route 53 signs DNSSEC zones with: one per account, shared by
-# every zone the root module creates there.
+# The KMS key Route 53 signs a DNSSEC zone with. The root module creates one per
+# zone; call it directly only for a second key-signing key during a rotation,
+# which Route 53 requires to use a different KMS key (README.md).
 #
 # Route 53 requires an asymmetric ECC_NIST_P256 SIGN_VERIFY key in us-east-1,
 # whatever region the zones are managed from, so this module checks the
@@ -26,8 +27,9 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
 
-  # Route 53 calls KMS for this account's zones only (the confused-deputy
-  # guard AWS recommends for service principals).
+  # Route 53 may use this key for one zone in this account only: the
+  # confused-deputy guard AWS recommends for service principals, as narrow as
+  # one key per zone allows.
   route53_source_conditions = [
     {
       test     = "StringEquals"
@@ -35,9 +37,9 @@ locals {
       values   = [local.account_id]
     },
     {
-      test     = "ArnLike"
+      test     = "ArnEquals"
       variable = "aws:SourceArn"
-      values   = ["arn:${local.partition}:route53:::hostedzone/*"]
+      values   = ["arn:${local.partition}:route53:::hostedzone/${var.hosted_zone_id}"]
     },
   ]
 }
@@ -110,7 +112,7 @@ data "aws_iam_policy_document" "key" {
 }
 
 resource "aws_kms_key" "this" {
-  description              = "DNSSEC key-signing keys for Route 53 hosted zones in this account (${module.label.id})"
+  description              = "DNSSEC key-signing key for a Route 53 hosted zone (${module.label.id})"
   customer_master_key_spec = "ECC_NIST_P256"
   key_usage                = "SIGN_VERIFY"
   deletion_window_in_days  = var.deletion_window_in_days

@@ -1,16 +1,38 @@
-# The zone module: a public zone, one ACTIVE key-signing key on the caller's
-# KMS key, and signing on, tagged from the label.
+# The zone module: a public zone, its own KMS signing key, one ACTIVE
+# key-signing key on that key, and signing on, tagged from the label.
 #
 # `command = plan` with a mocked provider needs no credentials. The outputs
 # carry values AWS assigns at apply, so the run that checks them overrides the
-# zone and the KSK with values in AWS's formats.
+# zone, the key and the KSK with values in AWS's formats.
+#
+# The key's policy and region check are tested on the submodule itself
+# (signing-key.tftest.hcl), against a real provider. Here the data sources it
+# reads are mocked only enough to plan: a mocked aws_iam_policy_document
+# renders random text, which aws_kms_key rejects, and the region must be
+# us-east-1 for the submodule's precondition.
+mock_provider "aws" {
+  mock_data "aws_region" {
+    defaults = {
+      region = "us-east-1"
+    }
+  }
 
-mock_provider "aws" {}
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "111111111111"
+    }
+  }
+
+  mock_data "aws_iam_policy_document" {
+    defaults = {
+      json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Deny\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+    }
+  }
+}
 
 variables {
   name        = "example"
   domain_name = "example.com"
-  kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 
   context = {
     namespace   = "vlt"
@@ -41,11 +63,10 @@ run "a_public_zone_signed_by_one_active_key" {
 
   assert {
     condition = (
-      aws_route53_key_signing_key.this.key_management_service_arn == var.kms_key_arn
-      && aws_route53_key_signing_key.this.name == "primary"
+      aws_route53_key_signing_key.this.name == "primary"
       && aws_route53_key_signing_key.this.status == "ACTIVE"
     )
-    error_message = "the zone must have one ACTIVE key-signing key, named primary by default, on the caller's KMS key"
+    error_message = "the zone must have one ACTIVE key-signing key, named primary by default"
   }
 
   assert {
@@ -81,6 +102,14 @@ run "outputs_carry_the_zone_and_the_ds_record" {
   }
 
   override_resource {
+    target = module.signing_key.aws_kms_key.this
+    values = {
+      arn    = "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+      key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+    }
+  }
+
+  override_resource {
     target = aws_route53_key_signing_key.this
     values = {
       hosted_zone_id         = "Z0123456789ABCDEFGHIJ"
@@ -92,7 +121,17 @@ run "outputs_carry_the_zone_and_the_ds_record" {
     }
   }
 
-  # The shape aws-organization publishes as <name>_domain_zone.
+  # The zone's own key, and the key-signing key on it.
+  assert {
+    condition = (
+      output.kms_key_arn == "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+      && aws_route53_key_signing_key.this.key_management_service_arn == output.kms_key_arn
+      && output.kms_key_alias == "alias/vlt-us-prd-platform-example-dnssec"
+    )
+    error_message = "the key-signing key must be backed by the zone's own KMS key, aliased alias/<label id>-dnssec"
+  }
+
+  # The shape aws-organization publishes in domain_zones.
   assert {
     condition = (
       output.zone == {
@@ -186,39 +225,6 @@ run "a_numeric_top_level_label_is_rejected" {
   }
 
   expect_failures = [var.domain_name]
-}
-
-run "a_key_outside_us_east_1_is_rejected" {
-  command = plan
-
-  variables {
-    kms_key_arn = "arn:aws:kms:us-west-2:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-  }
-
-  expect_failures = [var.kms_key_arn]
-}
-
-run "a_key_alias_is_rejected" {
-  command = plan
-
-  variables {
-    kms_key_arn = "arn:aws:kms:us-east-1:111111111111:alias/dnssec"
-  }
-
-  expect_failures = [var.kms_key_arn]
-}
-
-run "a_multi_region_key_is_accepted" {
-  command = plan
-
-  variables {
-    kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/mrk-1234abcd12ab34cd56ef1234567890ab"
-  }
-
-  assert {
-    condition     = aws_route53_key_signing_key.this.key_management_service_arn == var.kms_key_arn
-    error_message = "a multi-region key ARN must be accepted"
-  }
 }
 
 run "a_short_key_signing_key_name_is_rejected" {
