@@ -32,6 +32,9 @@ terraform.rc
 # dependabot can bump them. Examples are validate-only and not covered by
 # dependabot, so theirs would go stale.
 examples/**/.terraform.lock.hcl
+# Submodules are locked by their callers, not here; the terraform_docs hook
+# writes one when it inits modules/signing-key.
+modules/**/.terraform.lock.hcl
 
 # Local env files
 .env
