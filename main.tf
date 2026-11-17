@@ -31,6 +31,7 @@ locals {
 }
 
 resource "aws_route53_zone" "this" {
+  #checkov:skip=CKV2_AWS_39: Query logging needs a CloudWatch log group in us-east-1 with a resource policy for Route 53; not required yet, and a caller can add aws_route53_query_log on zone_id.
   name    = var.domain_name
   comment = coalesce(var.comment, "Public DNS for ${var.domain_name}, signed with DNSSEC")
 
