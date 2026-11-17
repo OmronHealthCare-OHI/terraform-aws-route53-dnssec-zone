@@ -70,7 +70,7 @@ which looks to users like the domain is gone:
   scheduled deletion can still be cancelled. Deny the pipeline `kms:DisableKey`,
   `kms:ScheduleKeyDeletion` and `kms:PutKeyPolicy` on it.
 - **The KSK** deactivated or deleted, which changing `key_signing_key_name`
-  does. Rotate instead (below).
+  does. Leave it alone: this version cannot rotate the KSK safely (below).
 - **Signing turned off** (`signing_status = "NOT_SIGNING"`) while the DS record
   is still at the registrar.
 - **The zone** deleted and re-created: new name servers, and no DS match. The zone
@@ -87,14 +87,24 @@ whole domain:
 
 ## Rotating the key-signing key
 
-Route 53 rotates the zone-signing key itself. The KSK is rotated by hand, with
+**This version cannot complete a KSK rotation.** It manages exactly one KSK,
+kept ACTIVE on the zone's own KMS key. A KSK created or retired outside it is
+drift: the next apply reactivates or recreates the module's KSK, and
+`ds_record` and `kms_key_arn` keep describing the original pair. Nor can the
+module hand over to a new key itself: pointing its one KSK at another key
+replaces the KSK, which breaks the domain (see above).
+
+Route 53 rotates the zone-signing key itself, so this concerns the KSK only, and
+only on a trigger: a suspected misuse of `kms:Sign` on the key, a change of
+algorithm, or a move to another key or account. There is no schedule.
+
+### What a rotation will take
+
 AWS's double-DS method. A zone holds at most two KSKs, and Route 53 requires each
-to use a **different KMS key**, so a rotation needs a second signing key: call
-`modules/signing-key` with the zone's `hosted_zone_id` and another `name`. This module holds one KSK, so
-step 1 happens outside it, or in a later version that holds two.
+to use a **different KMS key**, so a rotation needs a second signing key.
 
 1. **Add the new KSK and its DS record.** Create a second, ACTIVE KSK on the zone,
-   on the second KMS key, and add its DS record at the registrar next to the
+   on a second KMS key, and add its DS record at the registrar next to the
    first. The old DS record stays.
 2. **Wait for both caches to expire.** Read the TTL of the zone's DNSKEY records
    (`dig <domain> DNSKEY @<one of name_servers>`) and of the DS record at the
@@ -106,6 +116,21 @@ step 1 happens outside it, or in a later version that holds two.
    resolvers that cached only the old DS record still need the old KSK.
 4. **Retire the old KSK.** Set it to INACTIVE, then delete it. Route 53 refuses to
    delete an active KSK.
+
+A version that supports this needs:
+- **up to two KSKs, each on its own key**: a map such as
+  `key_signing_keys = { primary = { status = "ACTIVE" }, secondary = { ... } }`,
+  with the signing-key submodule called once per entry;
+- **`ds_records`**, keyed the same way, so each step can read the record it needs;
+- **a way to retire a key past `prevent_destroy`**: a `removed` block for the old
+  key, or `prevent_destroy` lifted for that one key in a reviewed change.
+
+### If a rotation cannot wait
+
+Rotate by hand with the steps above, using `modules/signing-key` (with the zone's
+`hosted_zone_id` and another `name`) for the second key. Then bring the state in
+line with the pair that remains, with `terraform state` moves or imports, so
+that a reviewed plan shows **no** KSK replacement before anyone applies it.
 
 ## Permissions the deploying identity needs
 
