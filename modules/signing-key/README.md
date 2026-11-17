@@ -1,18 +1,21 @@
 # signing-key
 
-The KMS key Route 53 signs one DNSSEC zone with: an asymmetric `ECC_NIST_P256`
-`SIGN_VERIFY` key in **us-east-1**, with `prevent_destroy` and a 30-day deletion
+The KMS key one Route 53 key-signing key (KSK) signs with: an asymmetric
+`ECC_NIST_P256` `SIGN_VERIFY` key in **us-east-1**, with a 30-day deletion
 window. Its policy lets the account's own IAM administer it, as in KMS's default
 key policy, and lets Route 53's DNSSEC service (`dnssec-route53.amazonaws.com`)
 describe it, read its public key, sign, and create grants for AWS resources, for
 this account and the one hosted zone it is for only (`aws:SourceAccount`, and
 `aws:SourceArn` equal to that zone's ARN).
 
-The root module calls it once per zone. Call it yourself only for a second
-key-signing key during a rotation, which Route 53 requires to use a different
-KMS key. Give it a provider configured for us-east-1; it refuses any other
-region. See the [root README](../../README.md) for rotation and for what breaks
-a signed domain.
+The root module calls it once per entry in `key_signing_keys`, because Route 53
+requires each of a zone's KSKs to use a different KMS key, including the second
+one a rotation adds. There is no need to call it yourself. Give it a provider
+configured for us-east-1; it refuses any other region.
+
+The key has **no `prevent_destroy`**, so that a rotation can retire it with a
+reviewed apply. See the [root README](../../README.md) for why that is safe, for
+rotation, and for what breaks a signed domain.
 
 <!-- BEGIN_TF_DOCS -->
 ## Requirements

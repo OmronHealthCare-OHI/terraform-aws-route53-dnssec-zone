@@ -1,5 +1,7 @@
-# The zone module: a public zone, its own KMS signing key, one ACTIVE
-# key-signing key on that key, and signing on, tagged from the label.
+# The zone module with its default: a public zone, one ACTIVE key-signing key
+# named primary on a KMS key of its own, and signing on, tagged from the label.
+# Two keys, and retiring one, are in rotation.tftest.hcl; the 0.0.1 upgrade is
+# in upgrade.tftest.hcl.
 #
 # `command = plan` with a mocked provider needs no credentials. The outputs
 # carry values AWS assigns at apply, so the run that checks them overrides the
@@ -63,8 +65,9 @@ run "a_public_zone_signed_by_one_active_key" {
 
   assert {
     condition = (
-      aws_route53_key_signing_key.this.name == "primary"
-      && aws_route53_key_signing_key.this.status == "ACTIVE"
+      length(aws_route53_key_signing_key.this) == 1
+      && aws_route53_key_signing_key.this["primary"].name == "primary"
+      && aws_route53_key_signing_key.this["primary"].status == "ACTIVE"
     )
     error_message = "the zone must have one ACTIVE key-signing key, named primary by default"
   }
@@ -89,7 +92,7 @@ run "signing_can_be_turned_off" {
   }
 }
 
-run "outputs_carry_the_zone_and_the_ds_record" {
+run "outputs_carry_the_zone_and_the_ds_records" {
   command = apply
 
   override_resource {
@@ -102,7 +105,7 @@ run "outputs_carry_the_zone_and_the_ds_record" {
   }
 
   override_resource {
-    target = module.signing_key.aws_kms_key.this
+    target = module.signing_key["primary"].aws_kms_key.this
     values = {
       arn    = "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
       key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
@@ -110,7 +113,7 @@ run "outputs_carry_the_zone_and_the_ds_record" {
   }
 
   override_resource {
-    target = aws_route53_key_signing_key.this
+    target = aws_route53_key_signing_key.this["primary"]
     values = {
       hosted_zone_id         = "Z0123456789ABCDEFGHIJ"
       ds_record              = "12345 13 2 ABCDEF0123456789"
@@ -121,14 +124,14 @@ run "outputs_carry_the_zone_and_the_ds_record" {
     }
   }
 
-  # The zone's own key, and the key-signing key on it.
+  # The KSK's own key. The primary entry keeps 0.0.1's alias, without its name.
   assert {
     condition = (
-      output.kms_key_arn == "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-      && aws_route53_key_signing_key.this.key_management_service_arn == output.kms_key_arn
-      && output.kms_key_alias == "alias/vlt-us-prd-platform-example-dnssec"
+      output.kms_key_arns == { primary = "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab" }
+      && aws_route53_key_signing_key.this["primary"].key_management_service_arn == output.kms_key_arns["primary"]
+      && output.kms_key_aliases == { primary = "alias/vlt-us-prd-platform-example-dnssec" }
     )
-    error_message = "the key-signing key must be backed by the zone's own KMS key, aliased alias/<label id>-dnssec"
+    error_message = "the key-signing key must be backed by a KMS key of its own, aliased alias/<label id>-dnssec for primary"
   }
 
   # The shape aws-organization publishes in domain_zones.
@@ -151,14 +154,17 @@ run "outputs_carry_the_zone_and_the_ds_record" {
   }
 
   assert {
-    condition = output.ds_record == {
-      record      = "12345 13 2 ABCDEF0123456789"
-      key_tag     = 12345
-      algorithm   = 13
-      digest_type = 2
-      digest      = "ABCDEF0123456789"
+    condition = output.ds_records == {
+      primary = {
+        record      = "12345 13 2 ABCDEF0123456789"
+        key_tag     = 12345
+        algorithm   = 13
+        digest_type = 2
+        digest      = "ABCDEF0123456789"
+        status      = "ACTIVE"
+      }
     }
-    error_message = "ds_record must carry the record and its four fields"
+    error_message = "ds_records must carry, per KSK, the record, its four fields and the KSK's status"
   }
 }
 
@@ -225,16 +231,6 @@ run "a_numeric_top_level_label_is_rejected" {
   }
 
   expect_failures = [var.domain_name]
-}
-
-run "a_short_key_signing_key_name_is_rejected" {
-  command = plan
-
-  variables {
-    key_signing_key_name = "ab"
-  }
-
-  expect_failures = [var.key_signing_key_name]
 }
 
 run "an_unknown_signing_status_is_rejected" {

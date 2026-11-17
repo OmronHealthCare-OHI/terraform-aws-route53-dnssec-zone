@@ -4,13 +4,14 @@ A **public Route 53 hosted zone, signed with DNSSEC**, and the KMS key that sign
 it. Use it for every public domain: signing comes with the zone, so no domain is
 left unsigned by omission.
 
-- **The root module** creates the zone (`prevent_destroy`), **its own KMS
-  signing key**, one key-signing key (KSK) on that key, and the zone's DNSSEC
-  signing. Route 53 manages the zone-signing key itself.
-- **`modules/signing-key`** is that KMS key: an asymmetric `ECC_NIST_P256`
+- **The root module** creates the zone (`prevent_destroy`), its key-signing
+  keys (KSKs) from `key_signing_keys`, **a KMS signing key of its own for each
+  KSK**, and the zone's DNSSEC signing. One KSK, `primary`, is the default and
+  the steady state; a second exists only during a rotation (below). Route 53
+  manages the zone-signing key itself.
+- **`modules/signing-key`** is one such KMS key: an asymmetric `ECC_NIST_P256`
   signing key in **us-east-1**, whose policy lets Route 53's DNSSEC service use
-  it for **this one zone** only. The root module calls it; call it yourself only
-  for a second KSK during a rotation (below).
+  it for **this one zone** only. The root module calls it once per KSK.
 
 Route 53 accepts DNSSEC signing keys from us-east-1 only, so give the module a
 us-east-1 provider. Route 53 itself is global, so the zone doesn't mind.
@@ -22,7 +23,7 @@ provider "aws" {
 }
 
 module "example_com" {
-  source    = "github.com/OmronHealthCare-OHI/terraform-aws-route53-dnssec-zone?ref=0.1.0"
+  source    = "github.com/OmronHealthCare-OHI/terraform-aws-route53-dnssec-zone?ref=1.0.0"
   providers = { aws = aws.us_east_1 }
 
   name        = "example"
@@ -34,13 +35,14 @@ module "example_com" {
 The `zone` output has the shape of aws-organization's `hostedZone` (`arn`,
 `name`, `zone_id`), so it can go straight into its `domain_zones` map.
 
-### One KMS key per zone, not one per account
+### One KMS key per KSK, not one per account
 
-AWS allows either. The module creates one per zone, because a key that breaks
-(a bad key policy, disabled, scheduled for deletion) or is misused (anyone with
-`kms:Sign` on it can sign a zone's DNSKEY set) then reaches **one** domain, not
-every signed domain in the account. Each key's policy names its own zone, and
-each zone rotates and retires its key on its own. A key costs about a dollar a
+AWS allows a key per account. The module creates one per KSK, because a key
+that breaks (a bad key policy, disabled, scheduled for deletion) or is misused
+(anyone with `kms:Sign` on it can sign a zone's DNSKEY set) then reaches **one**
+domain, not every signed domain in the account. Each key's policy names its own
+zone, and each zone rotates and retires its keys on its own. Route 53 requires
+a zone's two KSKs to use different keys anyway. A key costs about a dollar a
 month.
 
 ## Going live
@@ -52,7 +54,7 @@ work outward, one step at a time:
 2. **Delegate.** Set the domain's name servers at the registrar to the
    `name_servers` output. Wait until the parent zone's old NS records have
    expired (their TTL, often 48 hours).
-3. **Add the DS record** at the registrar from the `ds_record` output. Registrar
+3. **Add the DS record** at the registrar from `ds_records["primary"]`. Registrar
    forms usually ask for the four fields: key tag, algorithm (13, ECDSA P-256),
    digest type (2, SHA-256) and digest. From then on, validating resolvers
    check every answer.
@@ -65,12 +67,15 @@ work outward, one step at a time:
 Once the registrar has the DS record, these make the domain fail validation,
 which looks to users like the domain is gone:
 
-- **The KMS key** disabled, scheduled for deletion, or with Route 53 removed from
-  its policy. The key has `prevent_destroy` and a 30-day deletion window, so a
-  scheduled deletion can still be cancelled. Deny the pipeline `kms:DisableKey`,
-  `kms:ScheduleKeyDeletion` and `kms:PutKeyPolicy` on it.
-- **The KSK** deactivated or deleted, which changing `key_signing_key_name`
-  does. Leave it alone: this version cannot rotate the KSK safely (below).
+- **A KMS key that signs** disabled, scheduled for deletion, or with Route 53
+  removed from its policy. Keys have a 30-day deletion window, so a scheduled
+  deletion can still be cancelled. Deny the pipeline `kms:DisableKey` and
+  `kms:PutKeyPolicy` on them, and see "Retiring a key" for
+  `kms:ScheduleKeyDeletion`.
+- **A KSK whose DS record the registrar carries** deactivated or deleted, which
+  renaming or removing its entry in `key_signing_keys` asks for. Route 53
+  refuses that (below), so the apply fails instead of the domain; rotate by the
+  procedure below.
 - **Signing turned off** (`signing_status = "NOT_SIGNING"`) while the DS record
   is still at the registrar.
 - **The zone** deleted and re-created: new name servers, and no DS match. The zone
@@ -87,25 +92,28 @@ whole domain:
 
 ## Rotating the key-signing key
 
-**This version cannot complete a KSK rotation.** It manages exactly one KSK,
-kept ACTIVE on the zone's own KMS key. A KSK created or retired outside it is
-drift: the next apply reactivates or recreates the module's KSK, and
-`ds_record` and `kms_key_arn` keep describing the original pair. Nor can the
-module hand over to a new key itself: pointing its one KSK at another key
-replaces the KSK, which breaks the domain (see above).
-
 Route 53 rotates the zone-signing key itself, so this concerns the KSK only, and
 only on a trigger: a suspected misuse of `kms:Sign` on the key, a change of
 algorithm, or a move to another key or account. There is no schedule.
 
-### What a rotation will take
+The module follows AWS's double-DS method. A zone holds at most two KSKs, and
+Route 53 requires each to use a **different KMS key**, so each entry in
+`key_signing_keys` gets one. The names are yours; `primary` and `secondary`
+below are examples, and after a rotation the remaining entry keeps its name.
+Each step is a reviewed apply or a registrar change, in this order:
 
-AWS's double-DS method. A zone holds at most two KSKs, and Route 53 requires each
-to use a **different KMS key**, so a rotation needs a second signing key.
+1. **Add the new KSK.** Apply with a second entry:
 
-1. **Add the new KSK and its DS record.** Create a second, ACTIVE KSK on the zone,
-   on a second KMS key, and add its DS record at the registrar next to the
-   first. The old DS record stays.
+   ```hcl
+   key_signing_keys = {
+     primary   = {}
+     secondary = {}
+   }
+   ```
+
+   The zone now signs its DNSKEY set with both KSKs. Add the new DS record,
+   `ds_records["secondary"]`, at the registrar **next to** the old one. The old
+   DS record stays.
 2. **Wait for both caches to expire.** Read the TTL of the zone's DNSKEY records
    (`dig <domain> DNSKEY @<one of name_servers>`) and of the DS record at the
    parent (`dig <domain> DS @<one of the parent's name servers>`), and wait at
@@ -114,23 +122,125 @@ to use a **different KMS key**, so a rotation needs a second signing key.
    record matches it.
 3. **Remove the old DS record** at the registrar, then wait for the DS TTL again:
    resolvers that cached only the old DS record still need the old KSK.
-4. **Retire the old KSK.** Set it to INACTIVE, then delete it. Route 53 refuses to
-   delete an active KSK.
+4. **Set the old KSK INACTIVE**, in an apply of its own:
 
-A version that supports this needs:
-- **up to two KSKs, each on its own key**: a map such as
-  `key_signing_keys = { primary = { status = "ACTIVE" }, secondary = { ... } }`,
-  with the signing-key submodule called once per entry;
-- **`ds_records`**, keyed the same way, so each step can read the record it needs;
-- **a way to retire a key past `prevent_destroy`**: a `removed` block for the old
-  key, or `prevent_destroy` lifted for that one key in a reviewed change.
+   ```hcl
+   key_signing_keys = {
+     primary   = { status = "INACTIVE" }
+     secondary = {}
+   }
+   ```
 
-### If a rotation cannot wait
+   The zone now signs with the new KSK alone. Check that the domain still
+   validates (`dig +dnssec <domain>` through a validating resolver, and the
+   `DNSSECKeySigningKeysNeedingAction` metric). INACTIVE can still be undone by
+   setting it ACTIVE again; the next step cannot.
+5. **Retire the old entry.** Remove it, check that the plan destroys that
+   entry's KSK, key and alias and nothing else, and apply. Terraform deletes the
+   KSK (Route 53 deletes only an INACTIVE KSK) and then schedules its KMS key's
+   deletion, 30 days out.
 
-Rotate by hand with the steps above, using `modules/signing-key` (with the zone's
-`hosted_zone_id` and another `name`) for the second key. Then bring the state in
-line with the pair that remains, with `terraform state` moves or imports, so
-that a reviewed plan shows **no** KSK replacement before anyone applies it.
+Watch `DNSSECInternalFailure` and `DNSSECKeySigningKeysNeedingAction`
+throughout.
+
+### Retiring a key
+
+The KMS keys have **no `prevent_destroy`**, so step 5 is a plain apply. That
+was a choice between three ways to let one key go while the other stays:
+
+| | Retires one key in a reviewed apply | Guard against deleting a key that signs |
+|---|---|---|
+| **A `removed` block** (`lifecycle { destroy = false }`) | No. `from` cannot name one instance of a `for_each` (`Resource instance keys not allowed`), and the module call stays in the configuration for the other key. | n/a |
+| **Lifting `prevent_destroy` for that one key** | Not per key: `prevent_destroy` takes no variables, so it can only be lifted for every key at once. That is what the module does. | Route 53 and the 30-day deletion window (below) |
+| **Keeping `prevent_destroy`, retiring by hand** | No. The removal plan fails until someone runs `terraform state rm` on the key, outside review and with write access to state, then schedules the key's deletion in KMS. | `prevent_destroy` |
+
+What guards a key that still signs, without `prevent_destroy`:
+
+- **Terraform deletes a key only after the KSK on it**, because the KSK
+  references the key, and the AWS provider deactivates a KSK before deleting it.
+- **Route 53 refuses to deactivate a KSK** whose DS record is still at the
+  parent (`KeySigningKeyInParentDSRecord`), or that is the only KSK of a zone
+  that signs (`KeySigningKeyInUse`). The apply then fails before the key is
+  touched. The module refuses the second case at plan already.
+- **Deleting the zone**, and with it every key, is refused by the zone's
+  `prevent_destroy`, but only in a plan whose configuration still calls the
+  module. Terraform reads `prevent_destroy` from the configuration, so removing
+  the module call plans the destruction of the zone, its KSKs and its keys.
+  Turning signing off is the first step of that plan, and Route 53 refuses it too
+  while the parent holds a DS record for one of the zone's KSKs
+  (`KeySigningKeyInParentDSRecord`, per the `DisableHostedZoneDNSSEC` API
+  reference). Back that up in the pipeline's own policy: deny
+  `route53:DeleteHostedZone` there, so that a plan without the module call still
+  can't delete the zone.
+- **A deleted key is only scheduled for deletion**, 30 days out, and can be
+  recovered within that window. The apply that scheduled the deletion also
+  removed the key from state, so restoring the map entry alone would create a
+  *different* key, whose public key no longer matches the registrar's DS record.
+  To recover the original key:
+
+  1. `aws kms cancel-key-deletion --key-id <key ARN>`. This leaves the key
+     `Disabled`.
+  2. `aws kms enable-key --key-id <key ARN>`.
+  3. Restore the map entry, and import the key back at its former address in
+     the same apply:
+
+     ```hcl
+     import {
+       to = module.example_com.module.signing_key["primary"].aws_kms_key.this
+       id = "<key ID>"
+     }
+     ```
+
+  The apply re-creates the alias and the KSK on the original key. That KSK has
+  the same public key, so the registrar's DS record matches it again.
+
+What it costs: a key the module no longer manages can't linger by accident, and
+a key can't be kept back while its KSK is retired. To keep an old key (say, for
+an investigation into its misuse), run `terraform state rm` on it before step 5
+and schedule its deletion yourself later.
+
+The pipeline needs Route 53's `DeleteKeySigningKey` and `kms:ScheduleKeyDeletion`
+for step 5. If you deny it `kms:ScheduleKeyDeletion` on keys that sign, grant it
+for the retirement only: without it the apply deletes the KSK and then fails at
+the key, which stays in state until an apply with the grant deletes it.
+
+## Upgrading from 0.0.1
+
+`key_signing_key_name` became `key_signing_keys`, and the outputs `ds_record`,
+`kms_key_arn` and `kms_key_alias` became the maps `ds_records`, `kms_key_arns`
+and `kms_key_aliases`, keyed by KSK name. Read the record you gave the registrar
+from `ds_records["primary"]`.
+
+The module's `moved` blocks turn 0.0.1's KSK and key into the entry named
+`primary`, which is the default and keeps 0.0.1's alias. A caller that did not
+set `key_signing_key_name` changes nothing but the version, and the plan shows
+three moves and **no** other change (`tests/upgrade.tftest.hcl`).
+
+A caller that set `key_signing_key_name` keeps that name as the map key and moves
+on from `primary` in its own configuration, since the module's `moved` blocks
+can only name `primary`:
+
+```hcl
+module "example_com" {
+  # ...
+  key_signing_keys = { my_ksk = {} } # was key_signing_key_name = "my_ksk"
+}
+
+moved {
+  from = module.example_com.aws_route53_key_signing_key.this["primary"]
+  to   = module.example_com.aws_route53_key_signing_key.this["my_ksk"]
+}
+
+moved {
+  from = module.example_com.module.signing_key["primary"]
+  to   = module.example_com.module.signing_key["my_ksk"]
+}
+```
+
+Its key's alias then gains the name, `alias/<label id>-dnssec-myksk` (the label
+drops underscores and lowercases), so the plan replaces the alias. The key and the KSK
+stay. Whichever case applies, apply only once the plan shows no KSK or key
+being created or destroyed.
 
 ## Permissions the deploying identity needs
 
@@ -139,14 +249,14 @@ The Route 53 calls these resources make (hashicorp/aws 6.72.0):
 | Resource | Calls |
 |---|---|
 | `aws_route53_zone` | `CreateHostedZone`, `GetChange`, `GetHostedZone`, `ListTagsForResource`, `ChangeTagsForResource`, `UpdateHostedZoneComment` |
-| `aws_route53_key_signing_key` | `CreateKeySigningKey`, `ActivateKeySigningKey`, `DeactivateKeySigningKey`, `GetDNSSEC`, `GetChange` |
+| `aws_route53_key_signing_key` | `CreateKeySigningKey`, `ActivateKeySigningKey`, `DeactivateKeySigningKey`, `DeleteKeySigningKey` (retiring a KSK), `GetDNSSEC`, `GetChange` |
 | `aws_route53_hosted_zone_dnssec` | `EnableHostedZoneDNSSEC`, `DisableHostedZoneDNSSEC`, `GetDNSSEC`, `GetChange` |
 
-Grant `DeleteHostedZone` and `DeleteKeySigningKey` to no pipeline. Each zone's
-signing key also needs the usual KMS key-management calls in us-east-1: create
-the key, set its policy, tag it, create the alias, and read all of them back.
-Deny the pipeline `kms:DisableKey`, `kms:ScheduleKeyDeletion` and
-`kms:PutKeyPolicy` on keys that already sign a live domain.
+Grant `DeleteHostedZone` to no pipeline. Each KSK's signing key also needs the
+usual KMS key-management calls in us-east-1: create the key, set its policy, tag
+it, create the alias, and read all of them back; and `kms:ScheduleKeyDeletion`
+plus `kms:DeleteAlias` to retire one (see "Retiring a key"). Deny the pipeline
+`kms:DisableKey` and `kms:PutKeyPolicy` on keys that already sign a live domain.
 
 ## Local development
 
@@ -161,7 +271,15 @@ terraform test
 pre-commit run --all-files
 ```
 
+The tests need Terraform 1.14 or later: before it, test teardown destroys the
+mocked zone, which `prevent_destroy` refuses. The module itself needs 1.9.
+
 `tests/zone.tftest.hcl` plans the root module against a mocked provider.
+`tests/rotation.tftest.hcl` applies a rotation in sequence (two KSKs, the old
+one INACTIVE, then retired) and checks the limits on `key_signing_keys`.
+`tests/upgrade.tftest.hcl` applies a snapshot of 0.0.1 (`tests/fixtures/v0.0.1`)
+and plans the current module on the same state, so the `moved` blocks are tested
+against the addresses 0.0.1 wrote.
 `tests/signing-key.tftest.hcl` plans the submodule against a real provider with
 fake credentials, because the key policy is rendered by `aws_iam_policy_document`,
 which a mocked provider replaces with random text. The three data sources that
@@ -210,7 +328,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for versioning and releases.
 | <a name="input_context"></a> [context](#input\_context) | Label context from the caller's terraform-null-label instance. Supplies the <namespace>-<region>-<stage> id segments, the ohi:* tag hierarchy and any attributes. | <pre>object({<br/>    enabled              = optional(bool, true)<br/>    namespace            = optional(string, null)<br/>    region               = optional(string, null)<br/>    stage                = optional(string, null)<br/>    aws_region           = optional(string, null)<br/>    application          = optional(string, null)<br/>    module               = optional(string, null)<br/>    stack_suffix         = optional(string, null)<br/>    stack_name_enabled   = optional(bool, true)<br/>    owner                = optional(string, null)<br/>    name                 = optional(string, null)<br/>    attributes           = optional(list(string), [])<br/>    delimiter            = optional(string, "-")<br/>    tag_prefix           = optional(string, "ohi")<br/>    tag_delimiter        = optional(string, ":")<br/>    id_length_limit      = optional(number, null)<br/>    max_tag_key_length   = optional(number, null)<br/>    max_tag_value_length = optional(number, null)<br/>    tags                 = optional(map(string), {})<br/>  })</pre> | n/a | yes |
 | <a name="input_domain_name"></a> [domain\_name](#input\_domain\_name) | The domain the zone serves, e.g. example.com: lowercase, no trailing dot, an internationalized name in its Punycode (xn--) form. Changing it replaces the zone, which prevent\_destroy refuses. | `string` | n/a | yes |
 | <a name="input_extra_tags"></a> [extra\_tags](#input\_extra\_tags) | Additional tags merged with the label's generated ohi:* and CloudPosse tags. On a key collision the GENERATED tags win, so Namespace/Environment/Stage/Name and the ohi:* keys cannot be overridden or cleared. Passed through the label module, so its AWS tag constraints apply — including the 50-tag cap, which counts the generated tags. | `map(string)` | `{}` | no |
-| <a name="input_key_signing_key_name"></a> [key\_signing\_key\_name](#input\_key\_signing\_key\_name) | Name of the key-signing key, unique within the zone. Changing it replaces the KSK, and with it the DS record the registrar must carry: rotate by the procedure in README.md, not by renaming. | `string` | `"primary"` | no |
+| <a name="input_key_signing_keys"></a> [key\_signing\_keys](#input\_key\_signing\_keys) | The zone's key-signing keys (KSKs), keyed by KSK name: one, or two during a rotation. Each gets a KMS key of its own. status is ACTIVE (the default) or INACTIVE. Renaming or removing an entry deletes its KSK and schedules its key's deletion: do it only as the last step of a rotation (README.md). Route 53 refuses it while the registrar carries that KSK's DS record. A 0.0.1 KSK becomes the entry named primary. | <pre>map(object({<br/>    status = optional(string, "ACTIVE")<br/>  }))</pre> | <pre>{<br/>  "primary": {}<br/>}</pre> | no |
 | <a name="input_name"></a> [name](#input\_name) | Leaf name for this module's label, e.g. the domain without its top-level domain (connectstudios). Becomes the label's name segment and the Name tag. | `string` | n/a | yes |
 | <a name="input_signing_status"></a> [signing\_status](#input\_signing\_status) | SIGNING, or NOT\_SIGNING to turn DNSSEC off. Turn it off only after the DS record is gone from the registrar and its TTL has passed: a signed parent pointing at an unsigned zone fails validation for the whole domain. | `string` | `"SIGNING"` | no |
 
@@ -218,10 +336,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for versioning and releases.
 
 | Name | Description |
 | ---- | ----------- |
-| <a name="output_ds_record"></a> [ds\_record](#output\_ds\_record) | The DS record for the registrar, as the record string (key tag, algorithm, digest type, digest) and as its four fields, which registrar forms ask for separately. Add it only once delegation to name\_servers has propagated. |
+| <a name="output_ds_records"></a> [ds\_records](#output\_ds\_records) | The DS record for the registrar, per key-signing key (keyed as key\_signing\_keys), as the record string (key tag, algorithm, digest type, digest) and as its four fields, which registrar forms ask for separately, with the KSK's status. Add a record only once delegation to name\_servers has propagated, and during a rotation only in the order README.md gives. |
 | <a name="output_id"></a> [id](#output\_id) | The name the label composed for this module. |
-| <a name="output_kms_key_alias"></a> [kms\_key\_alias](#output\_kms\_key\_alias) | Alias of this zone's KMS signing key, alias/<label id>-dnssec. |
-| <a name="output_kms_key_arn"></a> [kms\_key\_arn](#output\_kms\_key\_arn) | ARN of this zone's KMS signing key, in us-east-1: for alarms, audits, and the key policy reviews a broken key would call for. |
+| <a name="output_kms_key_aliases"></a> [kms\_key\_aliases](#output\_kms\_key\_aliases) | Alias of each key-signing key's KMS key (keyed as key\_signing\_keys): alias/<label id>-dnssec for the entry named primary, alias/<label id>-dnssec-<name> for any other. |
+| <a name="output_kms_key_arns"></a> [kms\_key\_arns](#output\_kms\_key\_arns) | ARN of each key-signing key's KMS key (keyed as key\_signing\_keys), in us-east-1: for alarms, audits, and the key policy reviews a broken key would call for. |
 | <a name="output_label_context"></a> [label\_context](#output\_label\_context) | The context this module's label resolved to, for composing child labels that inherit its naming hierarchy. The leaf name is withheld: the label has a single name slot, so a child that inherited it would compose an id identical to this module's. Child labels must set their own name, and it replaces this one rather than nesting under it, so keep child names unique within the namespace/application hierarchy. |
 | <a name="output_name_servers"></a> [name\_servers](#output\_name\_servers) | The four name servers Route 53 assigned the zone, for the registrar's NS records. Delegate to these before adding the DS record. |
 | <a name="output_signing_status"></a> [signing\_status](#output\_signing\_status) | The zone's DNSSEC signing status: SIGNING or NOT\_SIGNING. |

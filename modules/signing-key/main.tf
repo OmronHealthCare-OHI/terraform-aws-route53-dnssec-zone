@@ -1,6 +1,6 @@
-# The KMS key Route 53 signs a DNSSEC zone with. The root module creates one per
-# zone; call it directly only for a second key-signing key during a rotation,
-# which Route 53 requires to use a different KMS key (README.md).
+# The KMS key one Route 53 key-signing key (KSK) signs with. The root module
+# calls this once per KSK: Route 53 requires each of a zone's KSKs to use a
+# different KMS key.
 #
 # Route 53 requires an asymmetric ECC_NIST_P256 SIGN_VERIFY key in us-east-1,
 # whatever region the zones are managed from, so this module checks the
@@ -9,7 +9,16 @@
 # Once a registrar carries a DS record for a zone signed by this key, the key
 # keeps that domain resolving: disabled, scheduled for deletion, or with
 # Route 53 dropped from its policy, every validating resolver fails the whole
-# domain. Hence prevent_destroy, and the longest deletion window.
+# domain. Hence the longest deletion window by default, so a scheduled deletion
+# can be cancelled.
+#
+# No prevent_destroy, so that a rotation can retire a key with a reviewed
+# apply. prevent_destroy cannot be set per key (it takes no variables), and a
+# removed block cannot name one of a for_each's instances, so the only other
+# way out would be a hand-run `terraform state rm`. Terraform destroys a key
+# only after the KSK on it, which the provider deactivates first, and Route 53
+# refuses that while the KSK's DS record is at the parent, or while it is the
+# only KSK of a zone that signs (README.md, "Retiring a key").
 
 module "label" {
   source = "github.com/OmronHealthCare-OHI/terraform-null-label?ref=1.0.0"
@@ -121,8 +130,6 @@ resource "aws_kms_key" "this" {
   tags = module.label.tags
 
   lifecycle {
-    prevent_destroy = true
-
     precondition {
       condition     = data.aws_region.current.region == "us-east-1"
       error_message = "Route 53 accepts DNSSEC signing keys from us-east-1 only: pass this module a provider configured for us-east-1."

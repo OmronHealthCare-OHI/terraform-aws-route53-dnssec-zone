@@ -32,6 +32,8 @@ terraform.rc
 # dependabot can bump them. Examples are validate-only and not covered by
 # dependabot, so theirs would go stale.
 examples/**/.terraform.lock.hcl
+# The 0.0.1 snapshot the upgrade test applies is test input, locked by the root.
+tests/fixtures/**/.terraform.lock.hcl
 # Submodules are locked by their callers, not here; the terraform_docs hook
 # writes one when it inits modules/signing-key.
 modules/**/.terraform.lock.hcl

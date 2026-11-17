@@ -20,14 +20,43 @@ variable "domain_name" {
   }
 }
 
-variable "key_signing_key_name" {
-  type        = string
-  description = "Name of the key-signing key, unique within the zone. Changing it replaces the KSK, and with it the DS record the registrar must carry: rotate by the procedure in README.md, not by renaming."
-  default     = "primary"
+variable "key_signing_keys" {
+  type = map(object({
+    status = optional(string, "ACTIVE")
+  }))
+  description = "The zone's key-signing keys (KSKs), keyed by KSK name: one, or two during a rotation. Each gets a KMS key of its own. status is ACTIVE (the default) or INACTIVE. Renaming or removing an entry deletes its KSK and schedules its key's deletion: do it only as the last step of a rotation (README.md). Route 53 refuses it while the registrar carries that KSK's DS record. A 0.0.1 KSK becomes the entry named primary."
+  default     = { primary = {} }
+  nullable    = false
 
   validation {
-    condition     = can(regex("^[a-zA-Z0-9_]{3,128}$", var.key_signing_key_name))
-    error_message = "key_signing_key_name must be 3 to 128 letters, digits or underscores."
+    # Route 53 allows two KSKs per zone. None would leave nothing to sign with.
+    condition     = length(var.key_signing_keys) >= 1 && length(var.key_signing_keys) <= 2
+    error_message = "key_signing_keys must have one or two entries: Route 53 allows at most two KSKs per zone, and a second exists only during a rotation."
+  }
+
+  validation {
+    condition     = alltrue([for name in keys(var.key_signing_keys) : can(regex("^[a-zA-Z0-9_]{3,128}$", name))])
+    error_message = "Each key_signing_keys name must be 3 to 128 letters, digits or underscores."
+  }
+
+  validation {
+    # The name also goes into the key's alias, through the label, which drops
+    # underscores and lowercases. Two names that read the same there would ask
+    # for one alias twice.
+    condition     = length(distinct([for name in keys(var.key_signing_keys) : lower(replace(name, "_", ""))])) == length(var.key_signing_keys)
+    error_message = "key_signing_keys names must still differ when lowercased and without underscores: each one names its key's alias."
+  }
+
+  validation {
+    condition     = alltrue([for ksk in values(var.key_signing_keys) : contains(["ACTIVE", "INACTIVE"], ksk.status)])
+    error_message = "Each key_signing_keys status must be ACTIVE or INACTIVE."
+  }
+
+  validation {
+    # Route 53 refuses to deactivate the only KSK of a zone that signs; say so at
+    # plan, not halfway through an apply.
+    condition     = var.signing_status != "SIGNING" || anytrue([for ksk in values(var.key_signing_keys) : ksk.status == "ACTIVE"])
+    error_message = "A zone that signs needs an ACTIVE key-signing key: keep one entry ACTIVE, or set signing_status to NOT_SIGNING first."
   }
 }
 
