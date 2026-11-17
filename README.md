@@ -163,9 +163,35 @@ What guards a key that still signs, without `prevent_destroy`:
   that signs (`KeySigningKeyInUse`). The apply then fails before the key is
   touched. The module refuses the second case at plan already.
 - **Deleting the zone**, and with it every key, is refused by the zone's
-  `prevent_destroy`.
-- **A deleted key is only scheduled for deletion**, 30 days out, and
-  `kms:CancelKeyDeletion` restores it. A KSK re-created on the restored key has
+  `prevent_destroy`, but only in a plan whose configuration still calls the
+  module. Terraform reads `prevent_destroy` from the configuration, so removing
+  the module call plans the destruction of the zone, its KSKs and its keys.
+  Turning signing off is the first step of that plan, and Route 53 refuses it too
+  while the parent holds a DS record for one of the zone's KSKs
+  (`KeySigningKeyInParentDSRecord`, per the `DisableHostedZoneDNSSEC` API
+  reference). Back that up in the pipeline's own policy: deny
+  `route53:DeleteHostedZone` there, so that a plan without the module call still
+  can't delete the zone.
+- **A deleted key is only scheduled for deletion**, 30 days out, and can be
+  recovered within that window. The apply that scheduled the deletion also
+  removed the key from state, so restoring the map entry alone would create a
+  *different* key, whose public key no longer matches the registrar's DS record.
+  To recover the original key:
+
+  1. `aws kms cancel-key-deletion --key-id <key ARN>`. This leaves the key
+     `Disabled`.
+  2. `aws kms enable-key --key-id <key ARN>`.
+  3. Restore the map entry, and import the key back at its former address in
+     the same apply:
+
+     ```hcl
+     import {
+       to = module.example_com.module.signing_key["primary"].aws_kms_key.this
+       id = "<key ID>"
+     }
+     ```
+
+  The apply re-creates the alias and the KSK on the original key. That KSK has
   the same public key, so the registrar's DS record matches it again.
 
 What it costs: a key the module no longer manages can't linger by accident, and
