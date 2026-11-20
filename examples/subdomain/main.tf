@@ -31,12 +31,21 @@ module "label" {
   owner       = "cloud-foundations"
 }
 
+# Two accounts, so two sets of credentials. Both providers start from the same
+# caller credentials and each assumes a role in its own account; the role names
+# here are placeholders for the roles your pipeline deploys with.
+# allowed_account_ids does not pick an account, it only refuses a wrong one.
+
 # The parent zone's account. Route 53 is global, so the region only has to be
 # one the provider accepts; us-east-1 also lets it create the parent's keys.
 provider "aws" {
   alias               = "parent"
   region              = "us-east-1"
   allowed_account_ids = ["111111111111"]
+
+  assume_role {
+    role_arn = "arn:aws:iam::111111111111:role/dns-deployer"
+  }
 }
 
 # The subdomain's account, in us-east-1 for its DNSSEC signing key.
@@ -44,6 +53,10 @@ provider "aws" {
   alias               = "test_us_east_1"
   region              = "us-east-1"
   allowed_account_ids = ["222222222222"]
+
+  assume_role {
+    role_arn = "arn:aws:iam::222222222222:role/dns-deployer"
+  }
 }
 
 module "example_com" {

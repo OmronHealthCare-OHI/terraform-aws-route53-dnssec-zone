@@ -70,7 +70,9 @@ variable "ds_records" {
   validation {
     # The record set would fold two equal records into one, so a copy-pasted
     # record would leave one key-signing key without its DS record in silence.
-    condition     = length(distinct(values(var.ds_records))) == length(var.ds_records)
+    # Compared in one case, because the digest is hex and the format check
+    # above accepts either case.
+    condition     = length(distinct([for ds in values(var.ds_records) : upper(ds)])) == length(var.ds_records)
     error_message = "ds_records must hold a different record for each key-signing key."
   }
 }

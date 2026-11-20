@@ -279,6 +279,23 @@ run "the_same_ds_record_twice_is_rejected" {
   expect_failures = [var.ds_records]
 }
 
+run "the_same_ds_record_in_another_case_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_records = {
+      primary   = "12345 13 2 0123456789ABCDEF"
+      secondary = "12345 13 2 0123456789abcdef"
+    }
+  }
+
+  expect_failures = [var.ds_records]
+}
+
 run "a_ttl_below_a_minute_is_rejected" {
   command = plan
 
