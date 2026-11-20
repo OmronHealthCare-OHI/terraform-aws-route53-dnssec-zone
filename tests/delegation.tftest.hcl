@@ -253,9 +253,9 @@ run "three_ds_records_are_rejected" {
 
   variables {
     ds_records = {
-      one   = "11111 13 2 0123456789ABCDEF"
-      two   = "22222 13 2 0123456789ABCDEF"
-      three = "33333 13 2 0123456789ABCDEF"
+      one   = "11111 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+      two   = "22222 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+      three = "33333 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
     }
   }
 
@@ -271,8 +271,8 @@ run "the_same_ds_record_twice_is_rejected" {
 
   variables {
     ds_records = {
-      primary   = "12345 13 2 0123456789ABCDEF"
-      secondary = "12345 13 2 0123456789ABCDEF"
+      primary   = "12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+      secondary = "12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
     }
   }
 
@@ -288,12 +288,112 @@ run "the_same_ds_record_in_another_case_is_rejected" {
 
   variables {
     ds_records = {
-      primary   = "12345 13 2 0123456789ABCDEF"
-      secondary = "12345 13 2 0123456789abcdef"
+      primary   = "12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+      secondary = "12345 13 2 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
   expect_failures = [var.ds_records]
+}
+
+run "a_zero_padded_ds_record_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_records = {
+      primary = "00123 013 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    }
+  }
+
+  expect_failures = [var.ds_records]
+}
+
+run "a_key_tag_above_16_bits_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_records = {
+      primary = "65536 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    }
+  }
+
+  expect_failures = [var.ds_records]
+}
+
+run "an_algorithm_above_8_bits_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_records = {
+      primary = "12345 256 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    }
+  }
+
+  expect_failures = [var.ds_records]
+}
+
+run "a_digest_too_short_for_its_type_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_records = {
+      primary = "12345 13 2 0123456789ABCDEF"
+    }
+  }
+
+  expect_failures = [var.ds_records]
+}
+
+run "an_unknown_digest_type_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_records = {
+      primary = "12345 13 9 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    }
+  }
+
+  expect_failures = [var.ds_records]
+}
+
+run "the_largest_values_and_other_digest_types_are_accepted" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_records = {
+      sha1   = "65535 255 1 0123456789ABCDEF0123456789ABCDEF01234567"
+      sha384 = "0 8 4 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    }
+  }
+
+  assert {
+    condition     = length(aws_route53_record.ds[0].records) == 2
+    error_message = "a 16-bit key tag, an 8-bit algorithm and SHA-1 or SHA-384 digests of the right length must be accepted"
+  }
 }
 
 run "a_ttl_below_a_minute_is_rejected" {

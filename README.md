@@ -283,12 +283,20 @@ following them would merge steps 3 and 4 into one apply. Route 53 refuses to
 deactivate a KSK whose DS record is still at the parent, and a resolver that
 cached the old DS record would fail to validate before its TTL ran out.
 
-`ds_ttl` is an hour by default, so the waits take hours, not the days a TLD's DS
-TTL takes. Check the parent's DS record with `dig test.example.com DS
-@<one of the parent's name servers>`.
+`ds_ttl` is an hour by default, so the DS waits (step 3, and turning off) take
+an hour, not the day a TLD's DS TTL takes. Step 2 also waits for the
+subdomain's DNSKEY TTL, which `ds_ttl` doesn't shorten: read it as "Rotating
+the key-signing key" above says. Check the parent's DS record with
+`dig test.example.com DS @<one of the parent's name servers>`.
 
-To turn DNSSEC off for the subdomain, empty `ds_records`, wait `ds_ttl`, then
-apply `signing_status = "NOT_SIGNING"` on the subdomain's zone.
+A lower `ds_ttl` holds only for records cached after the change: a resolver that
+cached the DS record earlier keeps it for the previous TTL. So lower it in an
+apply of its own, wait the previous TTL, and only then count on the new one for
+the waits above.
+
+To turn DNSSEC off for the subdomain, empty `ds_records`, wait `ds_ttl` (the
+previous value, if you lowered it within that time), then apply
+`signing_status = "NOT_SIGNING"` on the subdomain's zone.
 
 ### What the parent's deploying identity needs
 

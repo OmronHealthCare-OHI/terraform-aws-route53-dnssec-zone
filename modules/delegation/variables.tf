@@ -63,15 +63,39 @@ variable "ds_records" {
 
   validation {
     # Key tag, algorithm, digest type, digest: Route 53's ds_record format.
-    condition     = alltrue([for ds in values(var.ds_records) : can(regex("^[0-9]{1,5} [0-9]{1,3} [0-9]{1,3} [0-9A-Fa-f]+$", ds))])
-    error_message = "Each ds_records value must be a DS record: key tag, algorithm, digest type and digest, separated by single spaces, e.g. \"12345 13 2 ABCDEF...\"."
+    # Numbers without leading zeros, as Route 53 writes them, so that one record
+    # has one spelling and the duplicate check below can compare strings.
+    condition     = alltrue([for ds in values(var.ds_records) : can(regex("^(0|[1-9][0-9]{0,4}) (0|[1-9][0-9]{0,2}) (0|[1-9][0-9]{0,2}) [0-9A-Fa-f]+$", ds))])
+    error_message = "Each ds_records value must be a DS record: key tag, algorithm, digest type and digest, separated by single spaces, numbers without leading zeros, e.g. \"12345 13 2 ABCDEF...\"."
+  }
+
+  validation {
+    # The key tag is 16 bits, the algorithm and digest type 8 bits each. A record
+    # the format check rejects passes here (try), so it is reported once.
+    condition = alltrue([for ds in values(var.ds_records) : try(
+      tonumber(split(" ", ds)[0]) <= 65535 && tonumber(split(" ", ds)[1]) <= 255 && tonumber(split(" ", ds)[2]) <= 255,
+      true
+    )])
+    error_message = "Each ds_records value must have a key tag of at most 65535, and an algorithm and digest type of at most 255."
+  }
+
+  validation {
+    # A digest of the wrong length is a transcription error the parent would
+    # publish, breaking validation of the subdomain. Route 53 writes digest type
+    # 2; types 1 and 4 are the other ones in use. A record the format check
+    # rejects passes here (try), so it is reported once.
+    condition = alltrue([for ds in values(var.ds_records) : try(
+      lookup({ "1" = 40, "2" = 64, "4" = 96 }, split(" ", ds)[2], -1) == length(split(" ", ds)[3]),
+      true
+    )])
+    error_message = "Each ds_records value must have digest type 1 (SHA-1), 2 (SHA-256, as Route 53 writes) or 4 (SHA-384), with a digest of 40, 64 or 96 hex digits to match."
   }
 
   validation {
     # The record set would fold two equal records into one, so a copy-pasted
     # record would leave one key-signing key without its DS record in silence.
     # Compared in one case, because the digest is hex and the format check
-    # above accepts either case.
+    # above accepts either case; the numbers have one spelling already.
     condition     = length(distinct([for ds in values(var.ds_records) : upper(ds)])) == length(var.ds_records)
     error_message = "ds_records must hold a different record for each key-signing key."
   }
