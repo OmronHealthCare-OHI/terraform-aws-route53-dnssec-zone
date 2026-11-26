@@ -280,8 +280,12 @@ If the delegation also moves to a new zone, change one record per apply.
 Resolvers keep each record for its TTL, and an old record next to a new one
 fails validation: a cached old DS record with the new name servers, or cached
 old name servers with the new DS record. So remove the DS record
-(`ds_records = {}`) and wait its TTL; then switch `name_servers` and wait the
-old NS record's TTL; then add the new zone's DS record.
+(`ds_records = {}`) and wait its TTL; then switch `name_servers`; then add the
+new zone's DS record. Resolvers learn the old name servers from two records: the
+NS record in the parent, and the NS record at the old zone's own apex, which
+Route 53 gives a two-day TTL. So point the old zone's apex NS record at the new
+name servers too, and before adding the DS record, wait the longer of the two
+records' previous TTLs.
 
 ### Rotating and turning off
 
