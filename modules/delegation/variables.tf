@@ -27,7 +27,9 @@ variable "domain_name" {
     # A name outside the parent zone would be refused by Route 53 at apply. The
     # leading dot keeps notexample.com out of example.com, and the parent
     # itself out too: its NS record is Route 53's own.
-    condition     = endswith(var.domain_name, ".${trimsuffix(lower(var.parent_zone.name), ".")}")
+    # try: nullable = false covers the object, not its name, and a null name
+    # should get this message rather than a function-argument error.
+    condition     = try(endswith(var.domain_name, ".${trimsuffix(lower(var.parent_zone.name), ".")}"), false)
     error_message = "domain_name must be a subdomain of parent_zone.name, e.g. test.example.com under example.com."
   }
 }
@@ -62,17 +64,21 @@ variable "ds_records" {
   }
 
   validation {
-    # Key tag, algorithm, digest type, digest: Route 53's ds_record format.
-    # Numbers without leading zeros, as Route 53 writes them, so that one record
-    # has one spelling and the duplicate check below can compare strings.
-    condition     = alltrue([for ds in values(var.ds_records) : can(regex("^(0|[1-9][0-9]{0,4}) (0|[1-9][0-9]{0,2}) (0|[1-9][0-9]{0,2}) [0-9A-Fa-f]+$", ds))])
-    error_message = "Each ds_records value must be a DS record: key tag, algorithm, digest type and digest, separated by single spaces, numbers without leading zeros, e.g. \"12345 13 2 ABCDEF...\"."
+    # Key tag, algorithm, digest type, digest: Route 53's ds_record format, as
+    # the root module's ds_records output gives it. Numbers without leading
+    # zeros and the digest in uppercase, so that one record has one spelling:
+    # the duplicate check below can compare strings, and a hand-copied
+    # lowercase digest can't differ from what Route 53 reads back.
+    condition     = alltrue([for ds in values(var.ds_records) : can(regex(local.ds_record_format, ds))])
+    error_message = "Each ds_records value must be a DS record as the root module's ds_records output gives it: key tag, algorithm, digest type and digest, separated by single spaces, numbers without leading zeros and the digest in uppercase hex, e.g. \"12345 13 2 ABCDEF...\"."
   }
 
   validation {
-    # The key tag is 16 bits, the algorithm and digest type 8 bits each. A record
-    # the format check rejects passes here (try), so it is reported once.
-    condition = alltrue([for ds in values(var.ds_records) : try(
+    # The key tag is 16 bits, the algorithm and digest type 8 bits each. Only
+    # records in the format above are checked, so a malformed one gets the
+    # format error alone. The try() keeps the right-hand side from failing
+    # where || doesn't short-circuit (before Terraform 1.12).
+    condition = alltrue([for ds in values(var.ds_records) : !can(regex(local.ds_record_format, ds)) || try(
       tonumber(split(" ", ds)[0]) <= 65535 && tonumber(split(" ", ds)[1]) <= 255 && tonumber(split(" ", ds)[2]) <= 255,
       true
     )])
@@ -82,9 +88,8 @@ variable "ds_records" {
   validation {
     # A digest of the wrong length is a transcription error the parent would
     # publish, breaking validation of the subdomain. Route 53 writes digest type
-    # 2; types 1 and 4 are the other ones in use. A record the format check
-    # rejects passes here (try), so it is reported once.
-    condition = alltrue([for ds in values(var.ds_records) : try(
+    # 2; types 1 and 4 are the other ones in use. Checked as the range above.
+    condition = alltrue([for ds in values(var.ds_records) : !can(regex(local.ds_record_format, ds)) || try(
       lookup({ "1" = 40, "2" = 64, "4" = 96 }, split(" ", ds)[2], -1) == length(split(" ", ds)[3]),
       true
     )])
@@ -94,9 +99,8 @@ variable "ds_records" {
   validation {
     # The record set would fold two equal records into one, so a copy-pasted
     # record would leave one key-signing key without its DS record in silence.
-    # Compared in one case, because the digest is hex and the format check
-    # above accepts either case; the numbers have one spelling already.
-    condition     = length(distinct([for ds in values(var.ds_records) : upper(ds)])) == length(var.ds_records)
+    # The format above gives each record one spelling, so strings compare.
+    condition     = length(distinct(values(var.ds_records))) == length(var.ds_records)
     error_message = "ds_records must hold a different record for each key-signing key."
   }
 }

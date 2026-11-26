@@ -16,6 +16,13 @@
 #
 # No tags: Route 53 records carry none.
 
+locals {
+  # A DS record as Route 53 writes it: key tag, algorithm, digest type and
+  # digest, numbers without leading zeros, the digest in uppercase hex. The
+  # ds_records validations share it.
+  ds_record_format = "^(0|[1-9][0-9]{0,4}) (0|[1-9][0-9]{0,2}) (0|[1-9][0-9]{0,2}) [0-9A-F]+$"
+}
+
 resource "aws_route53_record" "ns" {
   zone_id = var.parent_zone.zone_id
   name    = var.domain_name

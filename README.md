@@ -52,8 +52,7 @@ month.
 ## Going live
 
 Signing a zone the internet doesn't ask yet is harmless, so apply first, then
-work outward, one step at a time. For a subdomain whose parent zone Route 53
-holds, the parent takes the registrar's place: see "Delegating a subdomain".
+work outward, one step at a time:
 
 1. **Apply.** The zone exists and signs. Nothing resolves through it yet.
 2. **Delegate.** Set the domain's name servers at the registrar to the
@@ -66,6 +65,9 @@ holds, the parent takes the registrar's place: see "Delegating a subdomain".
 4. **Watch** Route 53's `DNSSECInternalFailure` and
    `DNSSECKeySigningKeysNeedingAction` metrics for the zone. Either one means
    the domain may stop resolving for validating resolvers.
+
+For a subdomain whose parent zone Route 53 holds, the parent takes the
+registrar's place: see "Delegating a subdomain".
 
 ## What can break a signed domain
 
@@ -250,11 +252,14 @@ module "test_example_com_delegation" {
 }
 ```
 
-`examples/subdomain` has both accounts in one configuration. There, the
-`ds_records` output waits for the subdomain's signing, so the DS record is never
-published for a zone that doesn't sign. When the two zones belong to different
-configurations, apply the subdomain's first and carry `name_servers` and the
-DS record over as the delegation's inputs.
+`examples/subdomain` has both accounts in one configuration. There, the DS
+record is created only after the subdomain's signing resource. That is ordering,
+not a check: the signing resource exists with `NOT_SIGNING` too, and the DS
+record still follows `ds_records` then. So leave `ds_records` empty while the
+subdomain's zone doesn't sign; the example does that by testing the zone's
+`signing_status` output. When the two zones belong to different configurations,
+apply the subdomain's first and carry `name_servers` and the DS record over as
+the delegation's inputs.
 
 ### Going live
 
@@ -263,6 +268,20 @@ DS record over as the delegation's inputs.
    A new name has no older NS or DS records in caches, so both can go in one
    apply, as long as the subdomain zone already signs. Leave `ds_records`
    empty for a delegation without a chain of trust: it resolves, unvalidated.
+
+These steps are for a name the parent doesn't delegate yet. To take over a
+delegation made by hand, adopt its records first: Route 53 refuses to create
+records that exist. Add `import` blocks to `module.<name>.aws_route53_record.ns`
+and, if there is a DS record, `module.<name>.aws_route53_record.ds[0]` (or
+`moved` blocks, if they are managed in the same configuration), with inputs
+that match what is there, and check the plan shows no changes.
+
+If the delegation also moves to a new zone, change one record per apply.
+Resolvers keep each record for its TTL, and an old record next to a new one
+fails validation: a cached old DS record with the new name servers, or cached
+old name servers with the new DS record. So remove the DS record
+(`ds_records = {}`) and wait its TTL; then switch `name_servers` and wait the
+old NS record's TTL; then add the new zone's DS record.
 
 ### Rotating and turning off
 

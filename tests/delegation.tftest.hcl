@@ -183,6 +183,23 @@ run "the_parent_itself_is_rejected" {
   expect_failures = [var.domain_name]
 }
 
+run "a_parent_without_a_name_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    parent_zone = {
+      name    = null
+      zone_id = "Z0123456789ABCDEFGHIJ"
+    }
+  }
+
+  expect_failures = [var.domain_name]
+}
+
 run "a_malformed_parent_zone_id_is_rejected" {
   command = plan
 
@@ -228,6 +245,20 @@ run "a_name_server_with_a_trailing_dot_is_rejected" {
   expect_failures = [var.name_servers]
 }
 
+run "an_uppercase_name_server_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    name_servers = ["NS-1.awsdns-01.org"]
+  }
+
+  expect_failures = [var.name_servers]
+}
+
 run "a_malformed_ds_record_is_rejected" {
   command = plan
 
@@ -237,7 +268,9 @@ run "a_malformed_ds_record_is_rejected" {
 
   variables {
     ds_records = {
-      primary = "12345 13 2 not-a-digest"
+      # Non-hex, but the right length for digest type 2, so only the format
+      # check can reject it.
+      primary = "12345 13 2 GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
     }
   }
 
@@ -279,7 +312,7 @@ run "the_same_ds_record_twice_is_rejected" {
   expect_failures = [var.ds_records]
 }
 
-run "the_same_ds_record_in_another_case_is_rejected" {
+run "a_lowercase_digest_is_rejected" {
   command = plan
 
   module {
@@ -288,8 +321,7 @@ run "the_same_ds_record_in_another_case_is_rejected" {
 
   variables {
     ds_records = {
-      primary   = "12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-      secondary = "12345 13 2 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      primary = "12345 13 2 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -405,6 +437,34 @@ run "a_ttl_below_a_minute_is_rejected" {
 
   variables {
     ds_ttl = 30
+  }
+
+  expect_failures = [var.ds_ttl]
+}
+
+run "an_ns_ttl_below_a_minute_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ns_ttl = 30
+  }
+
+  expect_failures = [var.ns_ttl]
+}
+
+run "a_ttl_in_fractions_of_a_second_is_rejected" {
+  command = plan
+
+  module {
+    source = "./modules/delegation"
+  }
+
+  variables {
+    ds_ttl = 90.5
   }
 
   expect_failures = [var.ds_ttl]

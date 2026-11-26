@@ -36,9 +36,12 @@ part of a key-signing-key rotation, and each of its steps is an apply of its own
 `ds_records` empty for a delegation without a chain of trust.
 
 When the subdomain's zone is in the same configuration, the root module's
-`ds_records` output waits for signing, so the DS record is never published for a
-zone that doesn't sign yet. When it is in another configuration, apply that one
-first and carry the values over.
+`ds_records` output waits for its signing resource. That orders the DS record
+after it, but doesn't check it: the resource exists with `NOT_SIGNING` too. So
+leave `ds_records` empty while the subdomain's zone doesn't sign, for example
+with `module.test_example_com.signing_status == "SIGNING" ? { … } : {}`. When
+it is in another configuration, apply that one first and carry the values over.
+To take over a delegation made by hand, see the root README.
 
 <!-- BEGIN_TF_DOCS -->
 ## Requirements

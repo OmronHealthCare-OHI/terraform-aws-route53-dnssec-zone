@@ -84,8 +84,9 @@ module "test_example_com" {
 # The NS and DS records in example.com, so with the parent's provider. The DS
 # record is named, not derived from the subdomain's keys: during a rotation,
 # each change to this map is a step of its own (README.md, "Delegating a
-# subdomain"). ds_records waits for the subdomain's signing, so the DS record is
-# never published for a zone that does not sign yet.
+# subdomain"). ds_records waits for the subdomain's signing resource, but that
+# resource exists with NOT_SIGNING too, so the DS record is published only while
+# the subdomain's zone signs.
 module "test_example_com_delegation" {
   source = "../../modules/delegation"
   providers = {
@@ -95,9 +96,9 @@ module "test_example_com_delegation" {
   parent_zone  = module.example_com.zone
   domain_name  = module.test_example_com.zone_name
   name_servers = module.test_example_com.name_servers
-  ds_records = {
+  ds_records = module.test_example_com.signing_status == "SIGNING" ? {
     primary = module.test_example_com.ds_records["primary"].record
-  }
+  } : {}
 }
 
 output "example_com_name_servers" {
