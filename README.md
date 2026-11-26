@@ -12,6 +12,10 @@ left unsigned by omission.
 - **`modules/signing-key`** is one such KMS key: an asymmetric `ECC_NIST_P256`
   signing key in **us-east-1**, whose policy lets Route 53's DNSSEC service use
   it for **this one zone** only. The root module calls it once per KSK.
+- **`modules/delegation`** delegates a subdomain with a zone of its own (say
+  `test.example.com`) from its parent zone: the NS and DS records in the
+  parent. Call it yourself, with the parent's provider ("Delegating a
+  subdomain", below).
 
 Route 53 accepts DNSSEC signing keys from us-east-1 only, so give the module a
 us-east-1 provider. Route 53 itself is global, so the zone doesn't mind.
@@ -61,6 +65,9 @@ work outward, one step at a time:
 4. **Watch** Route 53's `DNSSECInternalFailure` and
    `DNSSECKeySigningKeysNeedingAction` metrics for the zone. Either one means
    the domain may stop resolving for validating resolvers.
+
+For a subdomain whose parent zone Route 53 holds, the parent takes the
+registrar's place: see "Delegating a subdomain".
 
 ## What can break a signed domain
 
@@ -204,6 +211,126 @@ for step 5. If you deny it `kms:ScheduleKeyDeletion` on keys that sign, grant it
 for the retirement only: without it the apply deletes the KSK and then fails at
 the key, which stays in state until an apply with the grant deletes it.
 
+## Delegating a subdomain
+
+A subdomain such as `test.example.com` can have a zone of its own, usually in
+another account than its parent's, so that the account owns its names. The
+zone comes from the root module like any other domain's, signed. What
+links it to the parent is two records **in the parent zone**, which
+`modules/delegation` manages:
+
+- the **NS record**, from the subdomain zone's `name_servers`;
+- the **DS record**, from its `ds_records`, which carries the chain of trust
+  from the parent down to the subdomain.
+
+`modules/delegation` runs with the **parent's** provider. It is a module of its
+own, not a `parent` input on the root module, because the parent is usually in
+another account: a root module that wrote into the parent would need a second
+provider, and Terraform can't make a provider optional, so every caller would
+have to pass one.
+
+```hcl
+module "test_example_com" {
+  source    = "github.com/OmronHealthCare-OHI/terraform-aws-route53-dnssec-zone?ref=1.1.0"
+  providers = { aws = aws.test_us_east_1 } # the subdomain's account, us-east-1
+
+  name        = "example-test"
+  domain_name = "test.example.com"
+  context     = module.label.context
+}
+
+module "test_example_com_delegation" {
+  source    = "github.com/OmronHealthCare-OHI/terraform-aws-route53-dnssec-zone//modules/delegation?ref=1.1.0"
+  providers = { aws = aws.parent } # the parent zone's account
+
+  parent_zone  = module.example_com.zone
+  domain_name  = module.test_example_com.zone_name
+  name_servers = module.test_example_com.name_servers
+  ds_records = {
+    primary = module.test_example_com.ds_records["primary"].record
+  }
+}
+```
+
+`examples/subdomain` has both accounts in one configuration. There, the DS
+record is created only after the subdomain's signing resource. That is ordering,
+not a check: the signing resource exists with `NOT_SIGNING` too, and the DS
+record still follows `ds_records` then. So leave `ds_records` empty while the
+subdomain's zone doesn't sign; the example does that by testing the zone's
+`signing_status` output. When the two zones belong to different configurations,
+apply the subdomain's first and carry `name_servers` and the DS record over as
+the delegation's inputs.
+
+### Going live
+
+1. **Apply the subdomain's zone.** It signs; nothing resolves through it yet.
+2. **Apply the delegation** with the NS record and `ds_records["primary"]`.
+   A new name has no older NS or DS records in caches, so both can go in one
+   apply, as long as the subdomain zone already signs. Leave `ds_records`
+   empty for a delegation without a chain of trust: it resolves, unvalidated.
+
+These steps are for a name the parent doesn't delegate yet. To take over a
+delegation made by hand, adopt its records first: Route 53 refuses to create
+records that exist. Add `import` blocks to `module.<name>.aws_route53_record.ns`
+and, if there is a DS record, `module.<name>.aws_route53_record.ds[0]` (or
+`moved` blocks, if they are managed in the same configuration), with inputs
+that match what is there, and check the plan shows no changes.
+
+If the delegation also moves to a new zone, change one record per apply.
+Resolvers keep each record for its TTL, and an old record next to a new one
+fails validation: a cached old DS record with the new name servers, or cached
+old name servers with the new DS record. So remove the DS record
+(`ds_records = {}`) and wait its TTL; then switch `name_servers`; then add the
+new zone's DS record. Resolvers learn the old name servers from two records: the
+NS record in the parent, and the NS record at the old zone's own apex, which
+Route 53 gives a two-day TTL. So point the old zone's apex NS record at the new
+name servers too, and before adding the DS record, wait the longer of the two
+records' previous TTLs.
+
+### Rotating and turning off
+
+The parent does the registrar's part of "Rotating the key-signing key" above,
+so each registrar step becomes a change to `ds_records`, in an apply of its own,
+with the same waits between them:
+
+| Step | Subdomain zone (`key_signing_keys`) | Parent (`ds_records`) |
+|---|---|---|
+| 1. Add the new KSK | `{ primary = {}, secondary = {} }` | then add `secondary`, next to `primary` |
+| 2. Wait | | the DNSKEY TTL and `ds_ttl`, whichever is longer |
+| 3. Remove the old DS record | | `{ secondary = … }`, then wait `ds_ttl` |
+| 4. Set the old KSK INACTIVE | `primary = { status = "INACTIVE" }` | |
+| 5. Retire the old entry | `{ secondary = {} }` | |
+
+The map names the records rather than following the subdomain's KSKs, because
+following them would merge steps 3 and 4 into one apply. Route 53 refuses to
+deactivate a KSK whose DS record is still at the parent, and a resolver that
+cached the old DS record would fail to validate before its TTL ran out.
+
+`ds_ttl` is an hour by default, so the DS waits (step 3, and turning off) take
+an hour, not the day a TLD's DS TTL takes. Step 2 also waits for the
+subdomain's DNSKEY TTL, which `ds_ttl` doesn't shorten: read it as "Rotating
+the key-signing key" above says. Check the parent's DS record with
+`dig test.example.com DS @<one of the parent's name servers>`.
+
+A lower `ds_ttl` holds only for records cached after the change: a resolver that
+cached the DS record earlier keeps it for the previous TTL. So lower it in an
+apply of its own, wait the previous TTL, and only then count on the new one for
+the waits above.
+
+To turn DNSSEC off for the subdomain, empty `ds_records`, wait `ds_ttl` (the
+previous value, if you lowered it within that time), then apply
+`signing_status = "NOT_SIGNING"` on the subdomain's zone.
+
+### What the parent's deploying identity needs
+
+`aws_route53_record` calls `GetHostedZone`, `ChangeResourceRecordSets`,
+`GetChange` and `ListResourceRecordSets` (hashicorp/aws 6.73.0). Scope
+`ChangeResourceRecordSets` to delegation with its condition keys:
+`route53:ChangeResourceRecordSetsRecordTypes` limited to `NS` and `DS`, and
+`route53:ChangeResourceRecordSetsNormalizedRecordNames` limited to the
+delegated names. The parent zone's own NS record is Route 53's, and the module
+refuses to delegate the parent's own name.
+
 ## Upgrading from 0.0.1
 
 `key_signing_key_name` became `key_signing_keys`, and the outputs `ds_record`,
@@ -280,6 +407,8 @@ one INACTIVE, then retired) and checks the limits on `key_signing_keys`.
 `tests/upgrade.tftest.hcl` applies a snapshot of 0.0.1 (`tests/fixtures/v0.0.1`)
 and plans the current module on the same state, so the `moved` blocks are tested
 against the addresses 0.0.1 wrote.
+`tests/delegation.tftest.hcl` plans the delegation submodule against a mocked
+provider and checks the limits on its inputs.
 `tests/signing-key.tftest.hcl` plans the submodule against a real provider with
 fake credentials, because the key policy is rendered by `aws_iam_policy_document`,
 which a mocked provider replaces with random text. The three data sources that
