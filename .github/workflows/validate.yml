@@ -126,13 +126,25 @@ jobs:
               | grep -v -E '^\|[[:space:]:|-]+\|$'
           }
           terraform-docs --version
-          committed="$(mktemp)"
-          cp README.md "$committed"
-          terraform-docs -c .terraform-docs.yml .
-          if ! diff -u <(normalize "$committed") <(normalize README.md); then
-            echo "::error file=README.md::The terraform-docs block is out of date: run pre-commit (or terraform-docs -c .terraform-docs.yml .) and commit README.md."
-            exit 1
-          fi
+          # The root module and each submodule, generated as the pre-commit
+          # hook does it: from inside the directory, so the root reads
+          # .terraform-docs.yml and a submodule, which has none, gets
+          # terraform-docs' defaults. Like the hook, skip a README without the
+          # markers. Check every directory before failing, so one run lists
+          # every stale README.
+          stale=0
+          for dir in ./ modules/*/; do
+            readme="${dir}README.md"
+            grep -q '<!-- BEGIN_TF_DOCS -->' "$readme" 2>/dev/null || continue
+            committed="$(mktemp)"
+            cp "$readme" "$committed"
+            (cd "$dir" && terraform-docs --output-mode=inject --output-file=README.md md ./)
+            if ! diff -u <(normalize "$committed") <(normalize "$readme"); then
+              echo "::error file=${readme#./}::The terraform-docs block is out of date: run pre-commit (or terraform-docs --output-mode=inject --output-file=README.md md ./ inside ${dir}) and commit ${readme#./}."
+              stale=1
+            fi
+          done
+          exit "$stale"
 
       # fmt and test use continue-on-error so results still publish; fail here.
       - name: Fail on format or test errors
